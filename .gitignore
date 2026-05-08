@@ -1,0 +1,14 @@
+.env
+kids-trends
+/kids-trends
+bolt.db
+.idea/
+.vscode/
+*.swp
+*.log
+.DS_Store
+token_cache.json
+audio/
+token_cache.json
+bolt.db
+tts/api/
