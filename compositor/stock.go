@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,7 +14,6 @@ import (
 
 const pexelsBaseURL = "https://api.pexels.com/videos/search"
 
-// PexelsVideo представляет одно видео из ответа Pexels.
 type PexelsVideo struct {
 	ID         int    `json:"id"`
 	URL        string `json:"url"`
@@ -25,20 +25,51 @@ type PexelsVideo struct {
 	} `json:"video_files"`
 }
 
-// PexelsResponse – структура ответа API.
 type PexelsResponse struct {
 	Videos []PexelsVideo `json:"videos"`
 }
 
-// FetchStockVideo ищет вертикальное видео по запросу и скачивает первое подходящее.
-// Возвращает путь к локальному файлу.
-func FetchStockVideo(apiKey, query string) (string, error) {
-	// Формируем запрос
+func FetchStockVideo(apiKey, rawTitle string) (string, error) {
+	query := extractKeywords(rawTitle)
+	if query == "" {
+		query = "kids fun"
+	}
+
+	path, err := searchAndDownload(apiKey, query)
+	if err == nil {
+		return path, nil
+	}
+	log.Printf("Первичный запрос '%s' не дал результатов: %v", query, err)
+
+	fallback := "kids fun"
+	path, err = searchAndDownload(apiKey, fallback)
+	if err != nil {
+		return "", fmt.Errorf("ни основной, ни запасной запрос не вернули видео: %w", err)
+	}
+	return path, nil
+}
+
+func extractKeywords(title string) string {
+	words := strings.Fields(title)
+	if len(words) > 4 {
+		words = words[:4]
+	}
+	result := strings.Join(words, " ")
+	var reg strings.Builder
+	for _, r := range result {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ' ' {
+			reg.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(reg.String())
+}
+
+func searchAndDownload(apiKey, query string) (string, error) {
 	u, _ := url.Parse(pexelsBaseURL)
 	q := u.Query()
 	q.Set("query", query)
 	q.Set("per_page", "5")
-	q.Set("orientation", "portrait") // только вертикальные
+	q.Set("orientation", "portrait")
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequest("GET", u.String(), nil)
@@ -67,7 +98,6 @@ func FetchStockVideo(apiKey, query string) (string, error) {
 		return "", fmt.Errorf("нет видео по запросу: %s", query)
 	}
 
-	// Берём первое видео и ищем HD-файл (ширина >= 1080)
 	var downloadURL string
 	for _, vf := range pexResp.Videos[0].VideoFiles {
 		if vf.Width >= 1080 && vf.FileType == "video/mp4" {
@@ -79,14 +109,12 @@ func FetchStockVideo(apiKey, query string) (string, error) {
 		return "", fmt.Errorf("нет подходящего качества для запроса: %s", query)
 	}
 
-	// Скачиваем видео
 	videoResp, err := http.Get(downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("скачать видео: %w", err)
 	}
 	defer videoResp.Body.Close()
 
-	// Сохраняем в папку stock/
 	os.MkdirAll("stock", 0755)
 	filename := filepath.Join("stock", fmt.Sprintf("%s_%d.mp4", sanitizeFilename(query), pexResp.Videos[0].ID))
 	file, err := os.Create(filename)
@@ -102,7 +130,6 @@ func FetchStockVideo(apiKey, query string) (string, error) {
 	return filename, nil
 }
 
-// sanitizeFilename убирает недопустимые символы из имени файла.
 func sanitizeFilename(s string) string {
 	repl := []string{" ", "/", "\\", ":", "*", "?", "\"", "<", ">", "|"}
 	res := s

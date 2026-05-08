@@ -95,13 +95,14 @@ func main() {
 			`"Sigma Boy" OR "Гном Гномыч" OR "Likee"`,
 			`"популярные блогеры" дети`,
 			`"школьники" новости интересные`,
+			`"six seven" дети`,
 		},
 		YouTubeApiKey: ytKey,
 		YouTubeQueries: []string{
 			fmt.Sprintf("обзор Minecraft %d", currentYear),
 			fmt.Sprintf("аниме топ %d", currentYear),
 		},
-		MaxArticles: 2,
+		MaxArticles: 1, // количество статей
 		Dedup:       dedup,
 	}
 
@@ -115,6 +116,7 @@ func main() {
 		fmt.Printf("%d. [%s] %s\n   %s\n", i+1, art.Source, art.Title, art.Link)
 	}
 
+	//gen := generator.NewGroq(os.Getenv("GROQ_API_KEY"))
 	gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
 
 	for i, article := range articles {
@@ -147,13 +149,20 @@ func main() {
 		videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", i+1))
 		os.MkdirAll("output", 0755)
 
-		bgVideo, err := compositor.FetchStockVideo(
-			os.Getenv("PEXELS_API_KEY"),
-			article.Title,
-		)
-		if err != nil {
-			log.Printf("Не удалось получить стоковое видео для статьи %d: %v (использую чёрный фон)", i+1, err)
-			bgVideo = ""
+		// Пробуем AI-видео, если есть токен Replicate
+		var bgVideo string
+		if replicateToken := os.Getenv("REPLICATE_API_TOKEN"); replicateToken != "" {
+			bgVideo, err = compositor.GenerateAIVideo(replicateToken, article.Title)
+			if err != nil {
+				log.Printf("AI-видео не получено: %v (переключаюсь на Pexels)", err)
+				bgVideo, _ = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), article.Title)
+			}
+		} else {
+			// Fallback на Pexels
+			bgVideo, err = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), article.Title)
+			if err != nil {
+				log.Printf("Стоковое видео не найдено: %v (использую чёрный фон)", err)
+			}
 		}
 
 		if err := compositor.ComposeVertical(compositor.ComposeParams{

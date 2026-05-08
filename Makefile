@@ -6,7 +6,7 @@ run:
 
 # Очистка временных файлов
 clean:
-	rm -rf audio/ output/ token_cache.json
+	rm -rf audio/ output/ token_cache.json stock/
 
 # Полный сброс и запуск (clean + run)
 fresh: clean run

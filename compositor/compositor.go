@@ -27,8 +27,9 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 
 	if bgVideoPath != "" {
 		cmd := exec.Command("ffmpeg",
-			"-i", bgVideoPath,
-			"-i", params.AudioPath,
+			"-stream_loop", "-1", // бесконечный повтор
+			"-i", bgVideoPath, // 0:v
+			"-i", params.AudioPath, // 1:a
 			"-filter_complex", fmt.Sprintf(
 				"[0:v]crop=ih*9/16:ih,scale=1080:1920,setsar=1,subtitles=%s:force_style='Fontsize=24,Alignment=2'[v]",
 				srtPath,
@@ -37,7 +38,7 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 			"-map", "1:a",
 			"-c:v", "libx264",
 			"-preset", "fast",
-			"-shortest",
+			"-shortest", // обрежет по окончанию аудио
 			"-y", params.OutputPath,
 		)
 		output, err := cmd.CombinedOutput()
