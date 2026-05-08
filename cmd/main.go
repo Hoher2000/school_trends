@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Hoher2000/school_trends/collector"
+	"github.com/Hoher2000/school_trends/compositor"
 	"github.com/Hoher2000/school_trends/generator"
 	"github.com/Hoher2000/school_trends/tts"
 	"github.com/joho/godotenv"
@@ -97,7 +98,7 @@ func main() {
 			fmt.Sprintf("обзор Minecraft %d", currentYear),
 			fmt.Sprintf("аниме топ %d", currentYear),
 		},
-		MaxArticles: 20,
+		MaxArticles: 2,
 		Dedup:       dedup,
 	}
 
@@ -140,6 +141,27 @@ func main() {
 				continue
 			}
 			log.Printf("Статья %d озвучена: %s", i+1, audioPath)
+		}
+		if saluteClient != nil {
+			audioPath, err := saluteClient.Synthesize(script.FullText)
+			if err != nil {
+				log.Printf("Ошибка озвучки статьи %d: %v", i+1, err)
+				continue
+			}
+			log.Printf("Статья %d озвучена: %s", i+1, audioPath)
+
+			// Сборка видео
+			videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", i+1))
+			os.MkdirAll("output", 0755)
+			if err := compositor.ComposeVertical(compositor.ComposeParams{
+				AudioPath:  audioPath,
+				Subtitles:  script.Subtitles,
+				OutputPath: videoOutput,
+			}); err != nil {
+				log.Printf("Ошибка сборки видео для статьи %d: %v", i+1, err)
+				continue
+			}
+			log.Printf("Видео для статьи %d собрано: %s", i+1, videoOutput)
 		}
 	}
 }
