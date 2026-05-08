@@ -28,7 +28,7 @@ func projectRoot() string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			break // дошли до корня файловой системы
+			break
 		}
 		dir = parent
 	}
@@ -65,21 +65,24 @@ func main() {
 		log.Fatalf("dedup init: %v", err)
 	}
 	defer dedup.Close()
-	// Создаем TokenManager
+
 	tm := tts.NewTokenManager(
 		os.Getenv("SALUTE_CLIENT_ID"),
 		os.Getenv("SALUTE_CLIENT_SECRET"),
 		"SALUTE_SPEECH_PERS",
 		"https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
 	)
-
 	if err := tm.Start(); err != nil {
 		log.Fatalf("TokenManager: %v", err)
 	}
 	defer tm.Stop()
 
 	saluteClient, err := tts.NewSaluteClient(tm)
+	if err != nil {
+		log.Fatalf("salute init: %v", err)
+	}
 	defer saluteClient.Close()
+
 	ytKey := os.Getenv("YOUTUBE_API_KEY")
 
 	params := collector.CollectParams{
@@ -126,42 +129,41 @@ func main() {
 		}
 		fmt.Printf("Сгенерированный сценарий для статьи %d:\n%s\n\n", i+1, scriptJSON)
 
-		// Парсим JSON в структуру Script
 		var script Script
 		if err := json.Unmarshal([]byte(scriptJSON), &script); err != nil {
 			log.Printf("Ошибка парсинга сценария %d: %v", i+1, err)
 			continue
 		}
 
-		// Озвучка, если клиент создан
-		if saluteClient != nil {
-			audioPath, err := saluteClient.Synthesize(script.FullText)
-			if err != nil {
-				log.Printf("Ошибка озвучки статьи %d: %v", i+1, err)
-				continue
-			}
-			log.Printf("Статья %d озвучена: %s", i+1, audioPath)
+		// Озвучка + сборка видео
+		audioPath, err := saluteClient.Synthesize(script.FullText)
+		if err != nil {
+			log.Printf("Ошибка озвучки статьи %d: %v", i+1, err)
+			continue
 		}
-		if saluteClient != nil {
-			audioPath, err := saluteClient.Synthesize(script.FullText)
-			if err != nil {
-				log.Printf("Ошибка озвучки статьи %d: %v", i+1, err)
-				continue
-			}
-			log.Printf("Статья %d озвучена: %s", i+1, audioPath)
+		log.Printf("Статья %d озвучена: %s", i+1, audioPath)
 
-			// Сборка видео
-			videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", i+1))
-			os.MkdirAll("output", 0755)
-			if err := compositor.ComposeVertical(compositor.ComposeParams{
-				AudioPath:  audioPath,
-				Subtitles:  script.Subtitles,
-				OutputPath: videoOutput,
-			}); err != nil {
-				log.Printf("Ошибка сборки видео для статьи %d: %v", i+1, err)
-				continue
-			}
-			log.Printf("Видео для статьи %d собрано: %s", i+1, videoOutput)
+		// Сборка видео
+		videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", i+1))
+		os.MkdirAll("output", 0755)
+
+		bgVideo, err := compositor.FetchStockVideo(
+			os.Getenv("PEXELS_API_KEY"),
+			article.Title,
+		)
+		if err != nil {
+			log.Printf("Не удалось получить стоковое видео для статьи %d: %v (использую чёрный фон)", i+1, err)
+			bgVideo = ""
 		}
+
+		if err := compositor.ComposeVertical(compositor.ComposeParams{
+			AudioPath:  audioPath,
+			Subtitles:  script.Subtitles,
+			OutputPath: videoOutput,
+		}, bgVideo); err != nil {
+			log.Printf("Ошибка сборки видео для статьи %d: %v", i+1, err)
+			continue
+		}
+		log.Printf("Видео для статьи %d собрано: %s", i+1, videoOutput)
 	}
 }
