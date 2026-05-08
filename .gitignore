@@ -12,4 +12,4 @@ audio/
 token_cache.json
 bolt.db
 tts/api/
-output/
+output/stock/
