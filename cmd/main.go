@@ -1,4 +1,3 @@
-// cmd/main.go
 package main
 
 import (
@@ -8,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Hoher2000/school_trends/collector"
@@ -102,7 +102,7 @@ func main() {
 			fmt.Sprintf("обзор Minecraft %d", currentYear),
 			fmt.Sprintf("аниме топ %d", currentYear),
 		},
-		MaxArticles: 5, // количество статей
+		MaxArticles: 5,
 		Dedup:       dedup,
 	}
 
@@ -116,67 +116,77 @@ func main() {
 		fmt.Printf("%d. [%s] %s\n   %s\n", i+1, art.Source, art.Title, art.Link)
 	}
 
-	//gen := generator.NewGroq(os.Getenv("GROQ_API_KEY"))
 	gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
 
+	var (
+		wg      sync.WaitGroup
+		dedupMu sync.Mutex
+	)
+
 	for i, article := range articles {
-		if !isKidSafe(article.Title, article.Description) {
-			log.Printf("Пропущена неподходящая статья %d: %s", i+1, article.Title)
-			continue
-		}
-		scriptJSON, err := gen.GenerateScript(article.Title, article.Description)
-		if err != nil {
-			log.Printf("Ошибка генерации для статьи %d: %v", i+1, err)
-			continue
-		}
-		fmt.Printf("Сгенерированный сценарий для статьи %d:\n%s\n\n", i+1, scriptJSON)
+		wg.Add(1)
+		go func(idx int, art collector.Article) {
+			defer wg.Done()
 
-		var script Script
-		if err := json.Unmarshal([]byte(scriptJSON), &script); err != nil {
-			log.Printf("Ошибка парсинга сценария %d: %v", i+1, err)
-			continue
-		}
-
-		// Озвучка + сборка видео
-		audioPath, err := saluteClient.Synthesize(script.FullText)
-		if err != nil {
-			log.Printf("Ошибка озвучки статьи %d: %v", i+1, err)
-			continue
-		}
-		log.Printf("Статья %d озвучена: %s", i+1, audioPath)
-
-		// Сборка видео
-		videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", i+1))
-		os.MkdirAll("output", 0755)
-
-		// Пробуем AI-видео, если есть токен Replicate
-		var bgVideo string
-		if replicateToken := os.Getenv("REPLICATE_API_TOKEN"); replicateToken != "" {
-			bgVideo, err = compositor.GenerateAIVideo(replicateToken, article.Title)
-			if err != nil {
-				log.Printf("AI-видео не получено: %v (переключаюсь на Pexels)", err)
-				bgVideo, _ = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), article.Title)
+			if !isKidSafe(art.Title, art.Description) {
+				log.Printf("Пропущена неподходящая статья %d: %s", idx+1, art.Title)
+				return
 			}
-		} else {
-			// Fallback на Pexels
-			bgVideo, err = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), article.Title)
+			scriptJSON, err := gen.GenerateScript(art.Title, art.Description)
 			if err != nil {
-				log.Printf("Стоковое видео не найдено: %v (использую чёрный фон)", err)
+				log.Printf("Ошибка генерации для статьи %d: %v", idx+1, err)
+				return
 			}
-		}
+			fmt.Printf("Сгенерированный сценарий для статьи %d:\n%s\n\n", idx+1, scriptJSON)
 
-		if err := compositor.ComposeVertical(compositor.ComposeParams{
-			AudioPath:  audioPath,
-			Subtitles:  script.Subtitles,
-			OutputPath: videoOutput,
-		}, bgVideo); err != nil {
-			log.Printf("Ошибка сборки видео для статьи %d: %v", i+1, err)
-			continue
-		}
-		log.Printf("Видео для статьи %d собрано: %s", i+1, videoOutput)
-		// Помечаем ссылку как опубликованную, чтобы избежать повторов
-		if err := dedup.MarkPublished(article.Link); err != nil {
-			log.Printf("Ошибка сохранения ссылки %d: %v", i+1, err)
-		}
+			var script Script
+			if err := json.Unmarshal([]byte(scriptJSON), &script); err != nil {
+				log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
+				return
+			}
+
+			audioPath, err := saluteClient.Synthesize(script.FullText)
+			if err != nil {
+				log.Printf("Ошибка озвучки статьи %d: %v", idx+1, err)
+				return
+			}
+			log.Printf("Статья %d озвучена: %s", idx+1, audioPath)
+
+			videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", idx+1))
+			os.MkdirAll("output", 0755)
+
+			var bgVideo string
+			if replicateToken := os.Getenv("REPLICATE_API_TOKEN"); replicateToken != "" {
+				bgVideo, err = compositor.GenerateAIVideo(replicateToken, art.Title)
+				if err != nil {
+					log.Printf("AI-видео не получено: %v (переключаюсь на Pexels)", err)
+					bgVideo, _ = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), art.Title)
+				}
+			} else {
+				bgVideo, err = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), art.Title)
+				if err != nil {
+					log.Printf("Стоковое видео не найдено: %v (использую чёрный фон)", err)
+				}
+			}
+
+			if err := compositor.ComposeVertical(compositor.ComposeParams{
+				AudioPath:  audioPath,
+				Subtitles:  script.Subtitles,
+				OutputPath: videoOutput,
+			}, bgVideo); err != nil {
+				log.Printf("Ошибка сборки видео для статьи %d: %v", idx+1, err)
+				return
+			}
+			log.Printf("Видео для статьи %d собрано: %s", idx+1, videoOutput)
+
+			dedupMu.Lock()
+			if err := dedup.MarkPublished(art.Link); err != nil {
+				log.Printf("Ошибка сохранения ссылки %d: %v", idx+1, err)
+			}
+			dedupMu.Unlock()
+		}(i, article)
 	}
+
+	wg.Wait()
+	fmt.Println("Все статьи обработаны.")
 }
