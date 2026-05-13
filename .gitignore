@@ -11,6 +11,6 @@ token_cache.json
 audio/
 token_cache.json
 bolt.db
-tts/api/
+#tts/api/
 output/
 stock/

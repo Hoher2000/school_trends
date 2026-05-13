@@ -9,6 +9,7 @@ option java_package = "TODO";
 
 service SmartSpeech {
   rpc Synthesize (SynthesisRequest) returns (stream SynthesisResponse);
+ 
 }
 
 message SynthesisRequest {
@@ -36,3 +37,4 @@ message SynthesisResponse {
   bytes data = 1; // chunk of audio data
   google.protobuf.Duration audio_duration = 2; // time from start of audio so far
 }
+
