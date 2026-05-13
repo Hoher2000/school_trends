@@ -102,7 +102,7 @@ func main() {
 			fmt.Sprintf("обзор Minecraft %d", currentYear),
 			fmt.Sprintf("аниме топ %d", currentYear),
 		},
-		MaxArticles: 1, // количество статей
+		MaxArticles: 5, // количество статей
 		Dedup:       dedup,
 	}
 
@@ -174,5 +174,9 @@ func main() {
 			continue
 		}
 		log.Printf("Видео для статьи %d собрано: %s", i+1, videoOutput)
+		// Помечаем ссылку как опубликованную, чтобы избежать повторов
+		if err := dedup.MarkPublished(article.Link); err != nil {
+			log.Printf("Ошибка сохранения ссылки %d: %v", i+1, err)
+		}
 	}
 }
