@@ -1,3 +1,4 @@
+// cmd/main.go
 package main
 
 import (
@@ -101,6 +102,15 @@ func main() {
 		YouTubeQueries: []string{
 			fmt.Sprintf("обзор Minecraft %d", currentYear),
 			fmt.Sprintf("аниме топ %d", currentYear),
+			`Minecraft OR Roblox`,
+			`Brawl Stars OR "Adopt Me" OR "Brookhaven"`,
+			fmt.Sprintf(`"новые игры" дети OR подростки %d`, currentYear),
+			fmt.Sprintf(`аниме %d OR "Моя геройская академия"`, currentYear),
+			fmt.Sprintf(`мемы %d смешные`, currentYear),
+			`"Sigma Boy" OR "Гном Гномыч" OR "Likee"`,
+			`"популярные блогеры" дети`,
+			`"школьники" новости интересные`,
+			`"six seven" дети`,
 		},
 		MaxArticles: 5,
 		Dedup:       dedup,
@@ -115,6 +125,10 @@ func main() {
 	for i, art := range articles {
 		fmt.Printf("%d. [%s] %s\n   %s\n", i+1, art.Source, art.Title, art.Link)
 	}
+
+	// Создаём папки один раз до горутин
+	os.MkdirAll("output", 0755)
+	os.MkdirAll(filepath.Join("output", "audio"), 0755)
 
 	gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
 
@@ -150,27 +164,31 @@ func main() {
 				log.Printf("Ошибка озвучки статьи %d: %v", idx+1, err)
 				return
 			}
-			log.Printf("Статья %d озвучена: %s", idx+1, audioPath)
+
+			// Уникальное имя аудио, чтобы горутины не перезаписывали файлы
+			uniqueAudio := filepath.Join("output", "audio", fmt.Sprintf("article_%d_%s", idx+1, filepath.Base(audioPath)))
+			if err := os.Rename(audioPath, uniqueAudio); err != nil {
+				log.Printf("Ошибка перемещения аудио %d: %v", idx+1, err)
+				return
+			}
+			log.Printf("Статья %d озвучена: %s", idx+1, uniqueAudio)
 
 			videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", idx+1))
-			os.MkdirAll("output", 0755)
 
-			var bgVideo string
-			if replicateToken := os.Getenv("REPLICATE_API_TOKEN"); replicateToken != "" {
-				bgVideo, err = compositor.GenerateAIVideo(replicateToken, art.Title)
-				if err != nil {
-					log.Printf("AI-видео не получено: %v (переключаюсь на Pexels)", err)
-					bgVideo, _ = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), art.Title)
-				}
+			// Фоновое видео
+			keywords := compositor.ExtractKeywords(art.Title) + fmt.Sprintf(" %d", time.Now().UnixNano()%100)
+			if keywords == "" {
+				keywords = "minecraft gameplay"
+			}
+			bgVideo, err := compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), keywords, nil)
+			if err != nil {
+				log.Printf("Стоковое видео не найдено для статьи %d: %v (использую чёрный фон)", idx+1, err)
 			} else {
-				bgVideo, err = compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), art.Title)
-				if err != nil {
-					log.Printf("Стоковое видео не найдено: %v (использую чёрный фон)", err)
-				}
+				log.Printf("Стоковое видео скачано для статьи %d: %s", idx+1, bgVideo)
 			}
 
 			if err := compositor.ComposeVertical(compositor.ComposeParams{
-				AudioPath:  audioPath,
+				AudioPath:  uniqueAudio,
 				Subtitles:  script.Subtitles,
 				OutputPath: videoOutput,
 			}, bgVideo); err != nil {
