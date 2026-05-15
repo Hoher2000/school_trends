@@ -14,3 +14,12 @@ bolt.db
 #tts/api/
 output/
 stock/
+backgrounds/
+audio/
+output/
+stock/
+token_cache.json
+bolt.db
+cookies.txt
+backgrounds/
+ai_video/
