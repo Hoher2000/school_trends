@@ -213,23 +213,22 @@ func main() {
 				log.Printf("Pexels: %v", err)
 			}
 
+			// Invidious (альтернативный поиск по YouTube)
+			if pipedVideo, err := collector.FetchPipedVideo(keywords); err == nil {
+				sources["piped"] = pipedVideo
+				log.Printf("Piped видео скачано: %s", pipedVideo)
+			} else {
+				log.Printf("Piped: %v", err)
+			}
 			// 2. Яндекс.Картинки через OpenSERP – передаём русские ключевые слова
 			yandexQuery := extractRussianKeywords(art.Title)
 			if yandexQuery == "" {
 				yandexQuery = strings.TrimSpace(art.Title)
 			}
 			if yandexQuery != "" {
-				if yandexImages, err := collector.FetchYandexImages(yandexQuery, 5); err == nil && len(yandexImages) > 0 {
+				if yandexImages, err := collector.FetchYandexImages(yandexQuery, 10); err == nil && len(yandexImages) > 0 {
 					log.Printf("Найдено %d картинок Яндекса", len(yandexImages))
-					var downloadedImages []string
-					for i, imgURL := range yandexImages {
-						destFile := filepath.Join("backgrounds", fmt.Sprintf("yandex_%d_%d.jpg", idx+1, i))
-						if err := downloadImage(imgURL, destFile); err != nil {
-							log.Printf("Не удалось скачать %s: %v", imgURL, err)
-							continue
-						}
-						downloadedImages = append(downloadedImages, destFile)
-					}
+					downloadedImages := downloadImagesConcurrently(yandexImages, fmt.Sprintf("yandex_%d", idx+1), 10*time.Second, 5)
 					if len(downloadedImages) > 0 {
 						slideshowVideo := filepath.Join("output", "slideshow_yandex.mp4")
 						if err := compositor.CreateSlideshow(downloadedImages, slideshowVideo); err == nil {
@@ -243,12 +242,12 @@ func main() {
 				}
 			}
 
-			// 3. YouTube (скачиваем через yt-dlp)
+			/*// 3. YouTube (скачиваем через yt-dlp)
 			if ytVideo, err := collector.FetchYouTubeBackground(keywords); err == nil {
 				sources["youtube"] = ytVideo
 			} else {
 				log.Printf("YouTube: %v", err)
-			}
+			}*/
 
 			/*// 4. Rutube (API + yt-dlp)
 			if rutubeRef, err := collector.FetchRutubeVideo(keywords); err == nil {
@@ -263,7 +262,7 @@ func main() {
 				log.Printf("Rutube: %v", err)
 			}*/
 
-			// 5. VK Video (API + yt-dlp)
+			/*// 5. VK Video (API + yt-dlp)
 			if vkToken := os.Getenv("VK_ACCESS_TOKEN"); vkToken != "" {
 				if vkRef, err := collector.FetchVKVideo(vkToken, keywords); err == nil {
 					data, _ := os.ReadFile(vkRef)
@@ -276,7 +275,7 @@ func main() {
 				} else {
 					log.Printf("VK: %v", err)
 				}
-			}
+			}*/
 
 			// Сборка готовых видео для каждого источника
 			for source, bgPath := range sources {
@@ -305,9 +304,10 @@ func main() {
 			}
 			fmt.Println("\nГотово! Все варианты в папке output/. Выберите лучший.")
 
+			// ✅ После успешной сборки – помечаем как опубликованную
 			dedupMu.Lock()
-			if err := dedup.MarkPublished(art.Link); err != nil {
-				log.Printf("Ошибка сохранения ссылки %d: %v", idx+1, err)
+			if err := dedup.MarkPublished(art.Title); err != nil {
+				log.Printf("Ошибка сохранения заголовка %d: %v", idx+1, err)
 			}
 			dedupMu.Unlock()
 		}(i, article)
@@ -433,4 +433,55 @@ func extractRussianKeywords(title string) string {
 		meaningful = meaningful[:5]
 	}
 	return strings.Join(meaningful, " ")
+}
+
+func downloadImageWithTimeout(url, filepath string, timeout time.Duration) error {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %d", resp.StatusCode)
+	}
+	file, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = io.Copy(file, resp.Body)
+	return err
+}
+
+// downloadImagesConcurrently скачивает массив URL в несколько горутин (до maxConcurrent).
+// Возвращает список локальных путей к успешно скачанным файлам.
+func downloadImagesConcurrently(urls []string, prefix string, timeout time.Duration, maxConcurrent int) []string {
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		results []string
+		sem     = make(chan struct{}, maxConcurrent) // семафор
+	)
+
+	for i, imgURL := range urls {
+		wg.Add(1)
+		go func(idx int, url string) {
+			defer wg.Done()
+			sem <- struct{}{}        // занимаем слот
+			defer func() { <-sem }() // освобождаем слот
+
+			destFile := filepath.Join("backgrounds", fmt.Sprintf("%s_%d.jpg", prefix, idx))
+			if err := downloadImageWithTimeout(url, destFile, timeout); err != nil {
+				log.Printf("Не удалось скачать %s: %v", url, err)
+				return
+			}
+			mu.Lock()
+			results = append(results, destFile)
+			mu.Unlock()
+			log.Printf("Скачано (%d/%d): %s", len(results), len(urls), destFile)
+		}(i, imgURL)
+	}
+	wg.Wait()
+	return results
 }

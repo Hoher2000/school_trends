@@ -1,17 +1,17 @@
 package compositor
 
 import (
-	"bytes"
+	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 func CreateSlideshow(imagePaths []string, outputPath string) error {
 	var valid []string
 	for _, p := range imagePaths {
-		if isImageFile(p) {
+		if isValidImage(p) {
 			valid = append(valid, p)
 		} else {
 			fmt.Printf("Пропущен не-картинка: %s\n", p)
@@ -53,30 +53,28 @@ func CreateSlideshow(imagePaths []string, outputPath string) error {
 		outputPath,
 	)
 
-	cmd := exec.Command("ffmpeg", args...)
+	// Тайм-аут 2 минуты
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	out, err := cmd.CombinedOutput()
+
+	// Всегда проверяем ошибку контекста ПЕРЕД ошибкой FFmpeg
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("слайдшоу прервано по тайм-ауту: %w", ctx.Err())
+	}
 	if err != nil {
 		return fmt.Errorf("FFmpeg слайдшоу ошибка: %w\nВывод: %s", err, string(out))
 	}
 	return nil
 }
 
-func isImageFile(path string) bool {
-	data, err := os.ReadFile(path)
+func isValidImage(path string) bool {
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", path)
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
-	if len(data) < 4 {
-		return false
-	}
-	if bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}) {
-		return true
-	}
-	if bytes.HasPrefix(data, []byte{0x89, 0x50, 0x4E, 0x47}) {
-		return true
-	}
-	if bytes.HasPrefix(data, []byte{0x52, 0x49, 0x46, 0x46}) && bytes.Contains(data[:12], []byte{0x57, 0x45, 0x42, 0x50}) {
-		return true
-	}
-	return false
+	return strings.Contains(string(out), "video") || strings.Contains(string(out), "image")
 }

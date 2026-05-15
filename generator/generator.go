@@ -152,9 +152,9 @@ func removeMarkdownJSON(s string) string {
 func (g *OpenRouterGenerator) ExtractKeywords(title, description string) ([]string, error) {
 	systemPrompt := `You are a helpful assistant that extracts keywords from Russian news headlines and descriptions for a kids' channel (ages 7-13). 
 The keywords will be used to search for background videos and images.
-Extract 7-10 relevant English keywords, including synonyms and related terms. 
-Return ONLY a JSON array of strings, without markdown. 
-Example: ["Minecraft", "Bedrock update", "bug fixes", "new features", "gameplay", "kids gaming"]`
+Extract 5-7 very specific and relevant English keywords, prioritizing rare or unique words from the text (like proper names, game titles, specific events). 
+Avoid generic terms like "social media", "internet", "popular", "online", "trending" unless they are the only relevant words.
+Return ONLY a JSON array of strings, without markdown.`
 
 	userPrompt := fmt.Sprintf("Title: %s\nDescription: %s", title, description)
 

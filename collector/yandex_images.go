@@ -7,7 +7,6 @@ import (
 	"net/url"
 )
 
-// YandexImageResult соответствует одному результату из OpenSERP.
 type YandexImageResult struct {
 	Title string `json:"title"`
 	Image struct {
@@ -30,6 +29,7 @@ func FetchYandexImages(query string, limit int) ([]string, error) {
 	q := u.Query()
 	q.Set("text", query)
 	q.Set("limit", fmt.Sprintf("%d", limit))
+	q.Set("family", "2") // <-- Добавлен строгий семейный фильтр
 	u.RawQuery = q.Encode()
 
 	resp, err := http.Get(u.String())

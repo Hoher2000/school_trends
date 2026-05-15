@@ -82,7 +82,7 @@ func CollectTrends(params CollectParams) ([]Article, error) {
 		}
 		seen[art.Link] = true
 
-		if params.Dedup != nil && params.Dedup.IsPublished(art.Link) {
+		if params.Dedup != nil && params.Dedup.IsPublished(art.Title) {
 			continue
 		}
 		filtered = append(filtered, art)
