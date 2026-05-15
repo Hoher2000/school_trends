@@ -4,7 +4,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,7 +114,7 @@ func main() {
 			`"школьники" новости интересные`,
 			`"six seven" дети`,
 		},
-		MaxArticles: 5,
+		MaxArticles: 1,
 		Dedup:       dedup,
 	}
 
@@ -173,29 +175,135 @@ func main() {
 			}
 			log.Printf("Статья %d озвучена: %s", idx+1, uniqueAudio)
 
-			videoOutput := filepath.Join("output", fmt.Sprintf("video_%d.mp4", idx+1))
-
-			// Фоновое видео
-			keywords := compositor.ExtractKeywords(art.Title) + fmt.Sprintf(" %d", time.Now().UnixNano()%100)
+			// Формируем ключевые слова из сценария (full_text)
+			// Умные ключевые слова из заголовка статьи
+			// Получаем ключевые слова через ИИ (или fallback)
+			var keywords string
+			if aiKeywords, err := gen.ExtractKeywords(art.Title, art.Description); err == nil && len(aiKeywords) > 0 {
+				keywords = strings.Join(aiKeywords, " ")
+			} else {
+				log.Printf("Ошибка получения ключевых слов от ИИ: %v", err)
+				keywords = extractKeywordsFromTitle(art.Title) // старый метод как fallback
+			}
+			if keywords == "" {
+				// Fallback: пробуем извлечь из полного текста сценария, отбросив первые 3 слова (приветствие)
+				words := strings.Fields(script.FullText)
+				if len(words) > 3 {
+					keywords = transliterate(strings.Join(words[3:], " "))
+				} else {
+					keywords = transliterate(script.FullText)
+				}
+			}
+			if keywords == "" {
+				keywords = compositor.ExtractKeywords(art.Title)
+			}
 			if keywords == "" {
 				keywords = "minecraft gameplay"
 			}
-			bgVideo, err := compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), keywords, nil)
-			if err != nil {
-				log.Printf("Стоковое видео не найдено для статьи %d: %v (использую чёрный фон)", idx+1, err)
+			// Добавляем случайное число для уникальности
+			keywords = fmt.Sprintf("%s %d", keywords, time.Now().UnixNano()%100)
+			fmt.Println("Ключевые слова для фона:", keywords)
+
+			sources := make(map[string]string) // источник -> путь к видеофайлу
+
+			// 1. Pexels (стоковое видео)
+			if pexelsVideo, err := compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), keywords, nil); err == nil {
+				sources["pexels"] = pexelsVideo
 			} else {
-				log.Printf("Стоковое видео скачано для статьи %d: %s", idx+1, bgVideo)
+				log.Printf("Pexels: %v", err)
 			}
 
-			if err := compositor.ComposeVertical(compositor.ComposeParams{
-				AudioPath:  uniqueAudio,
-				Subtitles:  script.Subtitles,
-				OutputPath: videoOutput,
-			}, bgVideo); err != nil {
-				log.Printf("Ошибка сборки видео для статьи %d: %v", idx+1, err)
-				return
+			// 2. Яндекс.Картинки через OpenSERP – передаём русские ключевые слова
+			yandexQuery := extractRussianKeywords(art.Title)
+			if yandexQuery == "" {
+				yandexQuery = strings.TrimSpace(art.Title)
 			}
-			log.Printf("Видео для статьи %d собрано: %s", idx+1, videoOutput)
+			if yandexQuery != "" {
+				if yandexImages, err := collector.FetchYandexImages(yandexQuery, 5); err == nil && len(yandexImages) > 0 {
+					log.Printf("Найдено %d картинок Яндекса", len(yandexImages))
+					var downloadedImages []string
+					for i, imgURL := range yandexImages {
+						destFile := filepath.Join("backgrounds", fmt.Sprintf("yandex_%d_%d.jpg", idx+1, i))
+						if err := downloadImage(imgURL, destFile); err != nil {
+							log.Printf("Не удалось скачать %s: %v", imgURL, err)
+							continue
+						}
+						downloadedImages = append(downloadedImages, destFile)
+					}
+					if len(downloadedImages) > 0 {
+						slideshowVideo := filepath.Join("output", "slideshow_yandex.mp4")
+						if err := compositor.CreateSlideshow(downloadedImages, slideshowVideo); err == nil {
+							sources["yandex_images"] = slideshowVideo
+						} else {
+							log.Printf("Слайдшоу из Яндекса: %v", err)
+						}
+					}
+				} else {
+					log.Printf("Яндекс.Картинки: %v", err)
+				}
+			}
+
+			// 3. YouTube (скачиваем через yt-dlp)
+			if ytVideo, err := collector.FetchYouTubeBackground(keywords); err == nil {
+				sources["youtube"] = ytVideo
+			} else {
+				log.Printf("YouTube: %v", err)
+			}
+
+			/*// 4. Rutube (API + yt-dlp)
+			if rutubeRef, err := collector.FetchRutubeVideo(keywords); err == nil {
+				data, _ := os.ReadFile(rutubeRef)
+				url := strings.TrimSpace(strings.Split(string(data), "\n")[0])
+				if downloaded, err := collector.DownloadWithYtDlp(url); err == nil {
+					sources["rutube"] = downloaded
+				} else {
+					log.Printf("Rutube download: %v", err)
+				}
+			} else {
+				log.Printf("Rutube: %v", err)
+			}*/
+
+			// 5. VK Video (API + yt-dlp)
+			if vkToken := os.Getenv("VK_ACCESS_TOKEN"); vkToken != "" {
+				if vkRef, err := collector.FetchVKVideo(vkToken, keywords); err == nil {
+					data, _ := os.ReadFile(vkRef)
+					url := strings.TrimSpace(strings.Split(string(data), "\n")[0])
+					if downloaded, err := collector.DownloadWithYtDlp(url); err == nil {
+						sources["vk"] = downloaded
+					} else {
+						log.Printf("VK download: %v", err)
+					}
+				} else {
+					log.Printf("VK: %v", err)
+				}
+			}
+
+			// Сборка готовых видео для каждого источника
+			for source, bgPath := range sources {
+				if bgPath == "" {
+					continue
+				}
+				videoOutput := filepath.Join("output", fmt.Sprintf("video_%s.mp4", source))
+				if err := compositor.ComposeVertical(compositor.ComposeParams{
+					AudioPath:  uniqueAudio,
+					Subtitles:  script.Subtitles,
+					OutputPath: videoOutput,
+				}, bgPath); err != nil {
+					log.Printf("Ошибка сборки %s: %v", source, err)
+				} else {
+					fmt.Printf("✅ Видео %s собрано: %s\n", source, videoOutput)
+				}
+			}
+			missing := []string{}
+			for _, name := range []string{"youtube", "rutube", "vk", "images", "pexels"} {
+				if _, ok := sources[name]; !ok {
+					missing = append(missing, name)
+				}
+			}
+			if len(missing) > 0 {
+				fmt.Printf("⚠️ Не удалось получить фоны из: %v\n", missing)
+			}
+			fmt.Println("\nГотово! Все варианты в папке output/. Выберите лучший.")
 
 			dedupMu.Lock()
 			if err := dedup.MarkPublished(art.Link); err != nil {
@@ -207,4 +315,122 @@ func main() {
 
 	wg.Wait()
 	fmt.Println("Все статьи обработаны.")
+}
+
+// Стоп-слова (русские и английские), которые не несут тематической нагрузки
+var stopWords = map[string]bool{
+	"и": true, "в": true, "на": true, "с": true, "по": true, "для": true, "от": true, "к": true,
+	"у": true, "за": true, "из": true, "до": true, "об": true, "под": true, "над": true,
+	"перед": true, "при": true, "про": true, "через": true, "без": true, "не": true, "но": true,
+	"а": true, "или": true, "как": true, "что": true, "чтобы": true, "это": true, "то": true,
+	"он": true, "она": true, "они": true, "мы": true, "вы": true, "ты": true, "я": true,
+	"меня": true, "мне": true, "мой": true, "твой": true, "свой": true, "его": true, "её": true,
+	"их": true, "весь": true, "вся": true, "всё": true, "все": true, "который": true,
+	"которая": true, "которые": true, "быть": true, "есть": true, "был": true, "была": true,
+	"было": true, "были": true, "будут": true, "будет": true, "сказать": true, "говорить": true,
+	"мочь": true, "сделать": true, "ещё": true, "уже": true, "очень": true, "так": true,
+	"вот": true, "там": true, "тут": true, "где": true, "когда": true, "почему": true,
+	"какой": true, "такая": true, "также": true, "только": true, "даже": true, "просто": true,
+	"более": true, "менее": true, "сейчас": true, "сегодня": true, "завтра": true, "вчера": true,
+	"потом": true, "всегда": true, "никогда": true, "иногда": true, "вообще": true,
+	"конечно": true, "пожалуйста": true, "извините": true, "привет": true, "пока": true,
+	"здравствуйте": true, "до свидания": true,
+	// Английские
+	"the": true, "a": true, "an": true, "in": true, "on": true, "at": true, "to": true,
+	"for": true, "of": true, "from": true, "by": true, "with": true, "about": true,
+	"is": true, "are": true, "was": true, "were": true, "be": true, "been": true,
+	"will": true, "would": true, "could": true, "should": true, "may": true, "might": true,
+	"can": true, "shall": true, "has": true, "have": true, "had": true, "do": true,
+	"does": true, "did": true, "and": true, "but": true, "or": true, "not": true,
+	"no": true, "yes": true, "so": true, "if": true, "then": true, "else": true,
+	"when": true, "where": true, "why": true, "how": true, "all": true, "both": true,
+	"each": true, "few": true, "more": true, "most": true, "other": true, "some": true,
+	"such": true, "only": true, "own": true, "same": true, "than": true, "too": true,
+	"very": true, "just": true, "now": true, "here": true, "there": true,
+}
+
+// extractKeywordsFromTitle извлекает значимые слова из заголовка, отбрасывая стоп-слова, и транслитерирует.
+func extractKeywordsFromTitle(title string) string {
+	// Удаляем знаки препинания, оставляем буквы, цифры и пробелы
+	var clean strings.Builder
+	for _, r := range title {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я') ||
+			(r >= '0' && r <= '9') || r == ' ' {
+			clean.WriteRune(r)
+		}
+	}
+	words := strings.Fields(clean.String())
+	var meaningful []string
+	for _, w := range words {
+		lower := strings.ToLower(w)
+		if len(lower) <= 2 || stopWords[lower] {
+			continue
+		}
+		meaningful = append(meaningful, lower)
+	}
+	if len(meaningful) > 5 {
+		meaningful = meaningful[:5]
+	}
+	return transliterate(strings.Join(meaningful, " "))
+}
+
+// transliterate простая транслитерация русских букв в латиницу.
+func transliterate(s string) string {
+	repl := strings.NewReplacer(
+		"а", "a", "б", "b", "в", "v", "г", "g", "д", "d", "е", "e", "ё", "yo",
+		"ж", "zh", "з", "z", "и", "i", "й", "y", "к", "k", "л", "l", "м", "m",
+		"н", "n", "о", "o", "п", "p", "р", "r", "с", "s", "т", "t", "у", "u",
+		"ф", "f", "х", "kh", "ц", "ts", "ч", "ch", "ш", "sh", "щ", "shch",
+		"ъ", "", "ы", "y", "ь", "", "э", "e", "ю", "yu", "я", "ya",
+		"А", "A", "Б", "B", "В", "V", "Г", "G", "Д", "D", "Е", "E", "Ё", "Yo",
+		"Ж", "Zh", "З", "Z", "И", "I", "Й", "Y", "К", "K", "Л", "L", "М", "M",
+		"Н", "N", "О", "O", "П", "P", "Р", "R", "С", "S", "Т", "T", "У", "U",
+		"Ф", "F", "Х", "Kh", "Ц", "Ts", "Ч", "Ch", "Ш", "Sh", "Щ", "Shch",
+		"Ъ", "", "Ы", "Y", "Ь", "", "Э", "E", "Ю", "Yu", "Я", "Ya",
+	)
+	return repl.Replace(s)
+}
+
+func downloadImage(url, filepath string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %d", resp.StatusCode)
+	}
+	file, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = io.Copy(file, resp.Body)
+	return err
+}
+
+// extractRussianKeywords возвращает до 5 значимых русских слов из заголовка (без транслитерации).
+func extractRussianKeywords(title string) string {
+	var clean strings.Builder
+	for _, r := range title {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я') ||
+			(r >= '0' && r <= '9') || r == ' ' {
+			clean.WriteRune(r)
+		}
+	}
+	words := strings.Fields(clean.String())
+	var meaningful []string
+	for _, w := range words {
+		lower := strings.ToLower(w)
+		if len(lower) <= 2 || stopWords[lower] {
+			continue
+		}
+		meaningful = append(meaningful, lower)
+	}
+	if len(meaningful) > 5 {
+		meaningful = meaningful[:5]
+	}
+	return strings.Join(meaningful, " ")
 }

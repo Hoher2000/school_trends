@@ -34,11 +34,11 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 
 	if bgVideoPath != "" {
 		args = append(args,
-			"-stream_loop", "-1", // бесконечное зацикливание входного видео
+			"-stream_loop", "-1",
 			"-i", bgVideoPath,
 			"-i", params.AudioPath,
 			"-filter_complex", fmt.Sprintf(
-				"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,subtitles=%s",
+				"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,pad=ceil(iw/2)*2:ceil(ih/2)*2,subtitles=%s",
 				srtPath,
 			),
 			"-map", "0:v",
@@ -71,6 +71,7 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 	return nil
 }
 
+// остальные функции (getAudioDuration, createSRT, formatSRTTime) без изменений
 func getAudioDuration(path string) (time.Duration, error) {
 	cmd := exec.Command("ffprobe",
 		"-v", "error",

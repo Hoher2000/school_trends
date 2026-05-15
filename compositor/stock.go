@@ -79,7 +79,7 @@ func ExtractKeywords(title string) string {
 	result := strings.Join(words, " ")
 	var reg strings.Builder
 	for _, r := range result {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ' ' {
+		if r == ' ' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я') {
 			reg.WriteRune(r)
 		}
 	}
@@ -233,4 +233,41 @@ func sanitizeFilename(s string) string {
 		res = strings.ReplaceAll(res, ch, "_")
 	}
 	return res
+}
+
+func ExtractKeywordsFromText(text string, maxWords int) string {
+	// Оставляем только буквы, цифры и пробелы
+	var builder strings.Builder
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я') ||
+			(r >= '0' && r <= '9') || r == ' ' {
+			builder.WriteRune(r)
+		}
+	}
+	clean := strings.TrimSpace(builder.String())
+	words := strings.Fields(clean)
+	if len(words) > maxWords {
+		words = words[:maxWords]
+	}
+	// Транслитерируем русские символы в латиницу
+	translit := transliterate(strings.Join(words, " "))
+	return strings.ToLower(translit)
+}
+
+// Простейшая транслитерация (можно расширить)
+func transliterate(s string) string {
+	repl := strings.NewReplacer(
+		"а", "a", "б", "b", "в", "v", "г", "g", "д", "d", "е", "e", "ё", "yo",
+		"ж", "zh", "з", "z", "и", "i", "й", "y", "к", "k", "л", "l", "м", "m",
+		"н", "n", "о", "o", "п", "p", "р", "r", "с", "s", "т", "t", "у", "u",
+		"ф", "f", "х", "kh", "ц", "ts", "ч", "ch", "ш", "sh", "щ", "shch",
+		"ъ", "", "ы", "y", "ь", "", "э", "e", "ю", "yu", "я", "ya",
+		"А", "A", "Б", "B", "В", "V", "Г", "G", "Д", "D", "Е", "E", "Ё", "Yo",
+		"Ж", "Zh", "З", "Z", "И", "I", "Й", "Y", "К", "K", "Л", "L", "М", "M",
+		"Н", "N", "О", "O", "П", "P", "Р", "R", "С", "S", "Т", "T", "У", "U",
+		"Ф", "F", "Х", "Kh", "Ц", "Ts", "Ч", "Ch", "Ш", "Sh", "Щ", "Shch",
+		"Ъ", "", "Ы", "Y", "Ь", "", "Э", "E", "Ю", "Yu", "Я", "Ya",
+	)
+	return repl.Replace(s)
 }

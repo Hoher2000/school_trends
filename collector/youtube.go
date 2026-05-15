@@ -55,3 +55,8 @@ func (f *YouTubeFetcher) Fetch() ([]Article, error) {
 	}
 	return articles, nil
 }
+
+// FetchYouTubeBackground ищет видео на YouTube по ключевым словам и скачивает первое.
+func FetchYouTubeBackground(query string) (string, error) {
+	return DownloadWithYtDlp("ytsearch1:" + query)
+}
