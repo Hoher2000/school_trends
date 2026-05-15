@@ -20,6 +20,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type Script struct {
+	FullText  string   `json:"full_text"`
+	Subtitles []string `json:"subtitles"`
+	Skip      bool     `json:"skip,omitempty"`
+}
+
 func projectRoot() string {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -52,11 +58,6 @@ func isKidSafe(title, description string) bool {
 		}
 	}
 	return true
-}
-
-type Script struct {
-	FullText  string   `json:"full_text"`
-	Subtitles []string `json:"subtitles"`
 }
 
 func main() {
@@ -133,6 +134,13 @@ func main() {
 	os.MkdirAll(filepath.Join("output", "audio"), 0755)
 
 	gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
+	// Создаём GigaChat-генератор промптов
+	gigachatGen, err := generator.NewGigaChatGenerator(os.Getenv("GIGACHAT_API_KEY"))
+	if err != nil {
+		log.Printf("Не удалось создать GigaChat генератор: %v", err)
+	} else {
+		defer gigachatGen.Close()
+	}
 
 	var (
 		wg      sync.WaitGroup
@@ -160,7 +168,15 @@ func main() {
 				log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
 				return
 			}
-
+			if script.Skip {
+				log.Printf("Статья %d не подходит для детей: %s", idx+1, art.Title)
+				dedupMu.Lock()
+				if err := dedup.MarkPublished(art.Title); err != nil {
+					log.Printf("Ошибка сохранения заголовка %d: %v", idx+1, err)
+				}
+				dedupMu.Unlock()
+				return
+			}
 			audioPath, err := saluteClient.Synthesize(script.FullText)
 			if err != nil {
 				log.Printf("Ошибка озвучки статьи %d: %v", idx+1, err)
@@ -206,12 +222,21 @@ func main() {
 
 			sources := make(map[string]string) // источник -> путь к видеофайлу
 
-			// 1. Pexels (стоковое видео)
+			// Генерация промпта для Kandinsky Video (пока только в лог)
+			if gigachatGen != nil {
+				if prompt, err := gigachatGen.GenerateKandinskyPrompt(art.Title, art.Description); err == nil {
+					log.Printf("Промпт для Kandinsky сгенерирован: %s", prompt)
+				} else {
+					log.Printf("Ошибка генерации промпта для Kandinsky: %v", err)
+				}
+			}
+
+			/*// 1. Pexels (стоковое видео)
 			if pexelsVideo, err := compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), keywords, nil); err == nil {
 				sources["pexels"] = pexelsVideo
 			} else {
 				log.Printf("Pexels: %v", err)
-			}
+			}*/
 
 			// Invidious (альтернативный поиск по YouTube)
 			if pipedVideo, err := collector.FetchPipedVideo(keywords); err == nil {

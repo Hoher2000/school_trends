@@ -5,6 +5,7 @@ go 1.25.0
 replace github.com/Hoher2000/school_trends => ./
 
 require (
+	github.com/AlexandrVIvanov/gigago v0.0.0-20250729093618-4b83fd183991
 	github.com/joho/godotenv v1.5.1
 	github.com/mmcdole/gofeed v1.3.0
 	go.etcd.io/bbolt v1.4.3
