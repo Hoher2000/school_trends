@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -19,7 +20,7 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 		return fmt.Errorf("аудиофайл не найден: %w", err)
 	}
 
-	audioDur, err := getAudioDuration(params.AudioPath)
+	audioDur, err := GetAudioDuration(params.AudioPath)
 	if err != nil {
 		return fmt.Errorf("не удалось определить длительность аудио: %w", err)
 	}
@@ -29,7 +30,8 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 		return fmt.Errorf("создать SRT: %w", err)
 	}
 	defer os.Remove(srtPath)
-
+	// Путь к папке со шрифтами
+	fontsDir := filepath.Join(projectRoot(), "fonts")
 	args := []string{}
 
 	if bgVideoPath != "" {
@@ -38,8 +40,8 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 			"-i", bgVideoPath,
 			"-i", params.AudioPath,
 			"-filter_complex", fmt.Sprintf(
-				"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,pad=ceil(iw/2)*2:ceil(ih/2)*2,subtitles=%s",
-				srtPath,
+				"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,pad=ceil(iw/2)*2:ceil(ih/2)*2,subtitles=%s:fontsdir=%s:force_style='Fontname=Rubik Moonrocks,Fontsize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1,Shadow=1'",
+				srtPath, fontsDir,
 			),
 			"-map", "0:v",
 			"-map", "1:a",
@@ -50,7 +52,8 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 			"-f", "lavfi",
 			"-i", fmt.Sprintf("color=c=black:s=1080x1920:d=%.3f", audioDur.Seconds()),
 			"-i", params.AudioPath,
-			"-filter_complex", fmt.Sprintf("subtitles=%s", srtPath),
+			"-filter_complex", fmt.Sprintf("subtitles=%s:fontsdir=%s:force_style='Fontname=Rubik Moonrocks,Fontsize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1,Shadow=1'",
+				srtPath, fontsDir),
 			"-map", "0:v",
 			"-map", "1:a",
 		)
@@ -72,7 +75,7 @@ func ComposeVertical(params ComposeParams, bgVideoPath string) error {
 }
 
 // остальные функции (getAudioDuration, createSRT, formatSRTTime) без изменений
-func getAudioDuration(path string) (time.Duration, error) {
+func GetAudioDuration(path string) (time.Duration, error) {
 	cmd := exec.Command("ffprobe",
 		"-v", "error",
 		"-show_entries", "format=duration",
@@ -127,4 +130,22 @@ func formatSRTTime(d time.Duration) string {
 	min := int(d.Minutes()) % 60
 	hr := int(d.Hours())
 	return fmt.Sprintf("%02d:%02d:%02d,%03d", hr, min, sec, ms)
+}
+
+func projectRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "."
 }

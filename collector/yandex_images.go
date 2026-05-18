@@ -28,8 +28,8 @@ func FetchYandexImages(query string, limit int) ([]string, error) {
 	}
 	q := u.Query()
 	q.Set("text", query)
-	q.Set("limit", fmt.Sprintf("%d", limit))
-	q.Set("family", "2") // <-- Добавлен строгий семейный фильтр
+	q.Set("limit", "40")
+	q.Set("family", "2")
 	u.RawQuery = q.Encode()
 
 	resp, err := http.Get(u.String())

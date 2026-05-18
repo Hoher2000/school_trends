@@ -130,6 +130,7 @@ func main() {
 	}
 
 	// Создаём папки один раз до горутин
+	os.MkdirAll("backgrounds", 0755)
 	os.MkdirAll("output", 0755)
 	os.MkdirAll(filepath.Join("output", "audio"), 0755)
 
@@ -141,6 +142,11 @@ func main() {
 	} else {
 		defer gigachatGen.Close()
 	}
+	//twoShotClient := collector.NewTwoShotMusicClient()
+	//hfMusicClient := collector.NewHuggingFaceMusicClient(os.Getenv("HF_API_TOKEN"))
+	hfMusicClient := collector.NewHuggingFaceMusicClient()
+
+	// minimaxMusicClient := collector.NewMiniMaxMusicClient(os.Getenv("MINIMAX_API_KEY"))
 
 	var (
 		wg      sync.WaitGroup
@@ -190,6 +196,7 @@ func main() {
 				return
 			}
 			log.Printf("Статья %d озвучена: %s", idx+1, uniqueAudio)
+			// Генерация фоновой музыки через TwoShot (бесплатно, без токена)
 
 			// Формируем ключевые слова из сценария (full_text)
 			// Умные ключевые слова из заголовка статьи
@@ -221,7 +228,28 @@ func main() {
 			fmt.Println("Ключевые слова для фона:", keywords)
 
 			sources := make(map[string]string) // источник -> путь к видеофайлу
-
+			// Генерация фоновой музыки через Hugging Face Gradio
+			if hfMusicClient != nil {
+				audioDur, err := compositor.GetAudioDuration(uniqueAudio)
+				if err == nil {
+					durSec := int(audioDur.Seconds())
+					if durSec < 5 {
+						durSec = 5
+					}
+					if durSec > 30 {
+						durSec = 30
+					}
+					musicPrompt := fmt.Sprintf("cheerful and playful instrumental background music for kids video about %s", art.Title)
+					if musicFile, err := hfMusicClient.GenerateMusic(musicPrompt, durSec); err == nil {
+						sources["ai_music"] = musicFile
+						log.Printf("AI-музыка сгенерирована: %s", musicFile)
+					} else {
+						log.Printf("AI-музыка не сгенерирована: %v", err)
+					}
+				} else {
+					log.Printf("Не удалось определить длительность аудио: %v", err)
+				}
+			}
 			// Генерация промпта для Kandinsky Video (пока только в лог)
 			if gigachatGen != nil {
 				if prompt, err := gigachatGen.GenerateKandinskyPrompt(art.Title, art.Description); err == nil {
@@ -238,13 +266,13 @@ func main() {
 				log.Printf("Pexels: %v", err)
 			}*/
 
-			// Invidious (альтернативный поиск по YouTube)
+			/*// Invidious (альтернативный поиск по YouTube)
 			if pipedVideo, err := collector.FetchPipedVideo(keywords); err == nil {
 				sources["piped"] = pipedVideo
 				log.Printf("Piped видео скачано: %s", pipedVideo)
 			} else {
 				log.Printf("Piped: %v", err)
-			}
+			}*/
 			// 2. Яндекс.Картинки через OpenSERP – передаём русские ключевые слова
 			yandexQuery := extractRussianKeywords(art.Title)
 			if yandexQuery == "" {
@@ -254,6 +282,15 @@ func main() {
 				if yandexImages, err := collector.FetchYandexImages(yandexQuery, 10); err == nil && len(yandexImages) > 0 {
 					log.Printf("Найдено %d картинок Яндекса", len(yandexImages))
 					downloadedImages := downloadImagesConcurrently(yandexImages, fmt.Sprintf("yandex_%d", idx+1), 10*time.Second, 5)
+
+					if len(downloadedImages) < 10 {
+						// Фолбэк‑запрос с общими словами
+						fallbackQuery := "яркие картинки дети"
+						if fbImages, err := collector.FetchYandexImages(fallbackQuery, 20); err == nil {
+							moreImages := downloadImagesConcurrently(fbImages, fmt.Sprintf("yandex_fb_%d", idx+1), 10*time.Second, 5)
+							downloadedImages = append(downloadedImages, moreImages...)
+						}
+					}
 					if len(downloadedImages) > 0 {
 						slideshowVideo := filepath.Join("output", "slideshow_yandex.mp4")
 						if err := compositor.CreateSlideshow(downloadedImages, slideshowVideo); err == nil {
@@ -476,7 +513,20 @@ func downloadImageWithTimeout(url, filepath string, timeout time.Duration) error
 	}
 	defer file.Close()
 	_, err = io.Copy(file, resp.Body)
-	return err
+	if err != nil {
+		return err
+	}
+	// Проверяем размер файла (минимум 1 КБ)
+	info, err := file.Stat()
+	if err != nil {
+		os.Remove(filepath)
+		return fmt.Errorf("не удалось получить размер файла: %w", err)
+	}
+	if info.Size() < 1024 {
+		os.Remove(filepath)
+		return fmt.Errorf("файл слишком маленький (%d байт)", info.Size())
+	}
+	return nil
 }
 
 // downloadImagesConcurrently скачивает массив URL в несколько горутин (до maxConcurrent).
@@ -495,7 +545,6 @@ func downloadImagesConcurrently(urls []string, prefix string, timeout time.Durat
 			defer wg.Done()
 			sem <- struct{}{}        // занимаем слот
 			defer func() { <-sem }() // освобождаем слот
-
 			destFile := filepath.Join("backgrounds", fmt.Sprintf("%s_%d.jpg", prefix, idx))
 			if err := downloadImageWithTimeout(url, destFile, timeout); err != nil {
 				log.Printf("Не удалось скачать %s: %v", url, err)
@@ -509,4 +558,13 @@ func downloadImagesConcurrently(urls []string, prefix string, timeout time.Durat
 	}
 	wg.Wait()
 	return results
+}
+
+// Функция для музыки – только 3 главных слова
+func extractMusicQuery(title string) string {
+	words := strings.Fields(extractRussianKeywords(title))
+	if len(words) > 3 {
+		words = words[:3]
+	}
+	return strings.Join(words, " ")
 }

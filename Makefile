@@ -30,7 +30,7 @@ run:
 
 # Очистка временных файлов
 clean:
-	rm -rf audio/ output/ stock/ token_cache.json
+	rm -rf audio/ output/ stock/ token_cache.json backgrounds/
 	rm -f $(BINARY)
 
 # Запуск OpenSERP контейнера (если ещё не запущен)

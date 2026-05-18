@@ -4,48 +4,42 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 )
 
-// OpenRouterGenerator использует бесплатные модели через OpenRouter API (или Groq).
 type OpenRouterGenerator struct {
 	APIKey  string
 	Model   string
 	BaseURL string
-	client  *http.Client // ← добавлено
+	client  *http.Client
 }
 
-// NewGroq создаёт генератор, работающий через Groq API.
 func NewGroq(apiKey string) *OpenRouterGenerator {
 	return &OpenRouterGenerator{
 		APIKey:  apiKey,
 		Model:   "llama-3.1-8b-instant",
 		BaseURL: "https://api.groq.com/openai/v1/chat/completions",
-		client:  &http.Client{}, // ← инициализация
+		client:  &http.Client{},
 	}
 }
 
-// NewOpenRouter создаёт генератор с бесплатной моделью Google Gemini 2.0 Flash Lite.
 func NewOpenRouter(apiKey string) *OpenRouterGenerator {
 	return &OpenRouterGenerator{
 		APIKey:  apiKey,
 		Model:   "google/gemini-2.0-flash-lite-001",
 		BaseURL: "https://openrouter.ai/api/v1/chat/completions",
-		client:  &http.Client{}, // ← инициализация
+		client:  &http.Client{},
 	}
 }
 
-// GenerateScript генерирует сценарий для видео на русском языке.
 func (g *OpenRouterGenerator) GenerateScript(title, description string) (string, error) {
 	systemPrompt := `Ты — строгий модератор и креативный продюсер детского канала (аудитория 7-13 лет).
 Сначала оцени, подходит ли новость для детей 7-13 лет.
-
-НЕ подходят темы: политика (кроме новостей об играх), война, экономика, IT‑конференции, работа, налоги, недвижимость, криминал, взрослые отношения, трагедии, жестокость.
-
+НЕ подходят темы: политика, война, экономика, IT‑конференции, работа, налоги, недвижимость, криминал, взрослые отношения, трагедии, жестокость.
 ПОДХОДЯТ темы: игры (Minecraft, Roblox, Brawl Stars и др.), аниме, мемы, блогеры, школьные новости, интересные события, наука для детей, животные, спорт.
 ВАЖНО: новости об играх считаются ПОДХОДЯЩИМИ, даже если в них упоминаются слова "ограничения", "блокировка", "Россия", "закон" и т.п. Пример: "Что происходит с метавселенными после ограничения Roblox в России" – это ПОДХОДЯЩАЯ новость, потому что она про игру Roblox.
-
 Если новость НЕ подходит, верни СТРОГО {"skip":true} и больше ничего.
 Если новость ПОДХОДИТ, создай сценарий для вертикального видео (Shorts) длительностью 30 секунд.
 Разбей на 6 коротких предложений для субтитров (каждое ~5 сек).
@@ -82,18 +76,43 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 Если подходит: {"full_text":"озвучка целиком","subtitles":["фраза1","фраза2","фраза3","фраза4","фраза5","фраза6"]}
 Озвучка должна начинаться с приветствия и заканчиваться призывом к обсуждению.`
 
-	userPrompt := fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description)
+	// Первая попытка
+	content, err := g.callAPI(systemPrompt, fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description))
+	if err != nil {
+		return "", err
+	}
 
+	jsonStr, err := extractJSON(content)
+	if err == nil {
+		return jsonStr, nil
+	}
+
+	// JSON не найден — пробуем строгий промпт
+	log.Printf("Первая попытка не дала JSON, пробую снова со строгим промптом")
+	strictSystem := "Return ONLY a valid JSON object as specified. No other text, no markdown. All content in Russian."
+	content, err = g.callAPI(strictSystem, fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description))
+	if err != nil {
+		return "", err
+	}
+
+	jsonStr, err = extractJSON(content)
+	if err != nil {
+		return "", fmt.Errorf("no JSON found in response even after strict prompt: %s", content)
+	}
+	return jsonStr, nil
+}
+
+// callAPI отправляет запрос и возвращает содержимое ответа.
+func (g *OpenRouterGenerator) callAPI(system, user string) (string, error) {
 	reqBody := map[string]interface{}{
 		"model": g.Model,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userPrompt},
+			{"role": "system", "content": system},
+			{"role": "user", "content": user},
 		},
 		"temperature": 0.9,
 		"max_tokens":  300,
 	}
-
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
@@ -103,13 +122,11 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+g.APIKey)
 	req.Header.Set("HTTP-Referer", "https://github.com/your-app")
 	req.Header.Set("X-Title", "KidsShortsGenerator")
 
-	// Используем общий клиент из структуры
 	resp, err := g.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("do request: %w", err)
@@ -129,33 +146,28 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 			} `json:"message"`
 		} `json:"choices"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode response: %w", err)
 	}
-
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("no choices in response")
 	}
-
-	content := result.Choices[0].Message.Content
-
-	cleaned := removeMarkdownJSON(content)
-
-	start := bytes.IndexByte([]byte(cleaned), '{')
-	end := bytes.LastIndexByte([]byte(cleaned), '}')
-	if start == -1 || end == -1 || start >= end {
-		return "", fmt.Errorf("no JSON found in response: %s", content)
-	}
-
-	return cleaned[start : end+1], nil
+	return result.Choices[0].Message.Content, nil
 }
 
-// removeMarkdownJSON убирает ```json и ``` вокруг текста
-func removeMarkdownJSON(s string) string {
-	s = strings.Replace(s, "```json", "", 1)
-	s = strings.Replace(s, "```", "", 1)
-	return strings.TrimSpace(s)
+// extractJSON извлекает JSON из текста, убирая маркеры и пробелы.
+func extractJSON(raw string) (string, error) {
+	// Убираем ```json и ``` (с любыми отступами)
+	cleaned := strings.ReplaceAll(raw, "```json", "")
+	cleaned = strings.ReplaceAll(cleaned, "```", "")
+	cleaned = strings.TrimSpace(cleaned)
+
+	start := strings.Index(cleaned, "{")
+	end := strings.LastIndex(cleaned, "}")
+	if start == -1 || end == -1 || start >= end {
+		return "", fmt.Errorf("no JSON braces found")
+	}
+	return cleaned[start : end+1], nil
 }
 
 // ExtractKeywords возвращает 7-10 английских ключевых слов по заголовку и описанию новости.

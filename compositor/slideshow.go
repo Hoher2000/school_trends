@@ -1,8 +1,10 @@
 package compositor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -11,7 +13,7 @@ import (
 func CreateSlideshow(imagePaths []string, outputPath string) error {
 	var valid []string
 	for _, p := range imagePaths {
-		if isValidImage(p) {
+		if isProbablyImage(p) {
 			valid = append(valid, p)
 		} else {
 			fmt.Printf("Пропущен не-картинка: %s\n", p)
@@ -53,8 +55,8 @@ func CreateSlideshow(imagePaths []string, outputPath string) error {
 		outputPath,
 	)
 
-	// Тайм-аут 2 минуты
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Тайм-аут 5 минуты
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
@@ -70,6 +72,7 @@ func CreateSlideshow(imagePaths []string, outputPath string) error {
 	return nil
 }
 
+// isValidImage проверяет, что файл является изображением (через ffprobe)
 func isValidImage(path string) bool {
 	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", path)
 	out, err := cmd.Output()
@@ -77,4 +80,25 @@ func isValidImage(path string) bool {
 		return false
 	}
 	return strings.Contains(string(out), "video") || strings.Contains(string(out), "image")
+}
+
+func isProbablyImage(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) < 4 {
+		return false
+	}
+	// JPEG
+	if bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}) {
+		return true
+	}
+	// PNG
+	if bytes.HasPrefix(data, []byte{0x89, 0x50, 0x4E, 0x47}) {
+		return true
+	}
+	// WebP
+	if bytes.HasPrefix(data, []byte{0x52, 0x49, 0x46, 0x46}) && len(data) >= 12 && string(data[8:12]) == "WEBP" {
+		return true
+	}
+	// Иначе полная проверка через ffprobe
+	return isValidImage(path)
 }
