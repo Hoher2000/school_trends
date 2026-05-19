@@ -2,11 +2,16 @@ package generator
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 type OpenRouterGenerator struct {
@@ -248,4 +253,152 @@ Return ONLY a JSON array of strings, without markdown.`
 		return nil, fmt.Errorf("unmarshal keywords: %w", err)
 	}
 	return keywords, nil
+}
+
+// Добавь этот метод в файл generator/generator.go, внутрь структуры OpenRouterGenerator
+
+// GenerateImagePrompts генерирует 5 разных промптов для фоновых изображений.
+func (g *OpenRouterGenerator) GenerateImagePrompts(title, script string) ([]string, error) {
+	systemPrompt := `Ты — креативный художник детского канала (аудитория 7-13 лет).
+Придумай 5 разных промптов для генерации фоновых изображений к видео-новости.
+Каждый промпт должен описывать отдельную сцену, связанную с темой новости.
+Промпты должны быть на РУССКОМ языке, яркими, позитивными, без жестокости.
+Разнообразие: разные ракурсы, действия, эмоции, детали.
+Верни СТРОГО JSON-массив из 5 строк, без markdown. Пример: ["промпт1", "промпт2", "промпт3", "промпт4", "промпт5"]`
+
+	userPrompt := fmt.Sprintf("Заголовок: %s\nСценарий: %s", title, script)
+
+	reqBody := map[string]interface{}{
+		"model": g.Model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"temperature": 0.9,
+		"max_tokens":  300,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", g.BaseURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+g.APIKey)
+	req.Header.Set("HTTP-Referer", "https://github.com/your-app")
+	req.Header.Set("X-Title", "KidsShortsGenerator")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody bytes.Buffer
+		errBody.ReadFrom(resp.Body)
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, errBody.String())
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(result.Choices) == 0 {
+		return nil, fmt.Errorf("no choices in response")
+	}
+
+	content := result.Choices[0].Message.Content
+	// Очищаем от маркёров ```json ... ```
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(content, "```json", ""), "```", "")
+	cleaned = strings.TrimSpace(cleaned)
+
+	// Ищем JSON-массив
+	start := strings.Index(cleaned, "[")
+	end := strings.LastIndex(cleaned, "]")
+	if start == -1 || end == -1 || start >= end {
+		return nil, fmt.Errorf("no JSON array found in response: %s", content)
+	}
+
+	var prompts []string
+	if err := json.Unmarshal([]byte(cleaned[start:end+1]), &prompts); err != nil {
+		return nil, fmt.Errorf("unmarshal prompts: %w", err)
+	}
+
+	if len(prompts) < 3 {
+		return nil, fmt.Errorf("too few prompts returned: %d", len(prompts))
+	}
+
+	return prompts[:5], nil
+}
+
+// GenerateImage генерирует картинку по текстовому промпту через OpenRouter.
+func (g *OpenRouterGenerator) GenerateImage(prompt string) (string, error) {
+	// Используем модель google/gemini-3-pro-image-preview для генерации изображений
+	reqBody := map[string]interface{}{
+		"model": "google/gemini-3-pro-image-preview",
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"temperature": 0.9,
+		"max_tokens":  500,
+	}
+
+	jsonData, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", "https://openrouter.ai/api/v1/chat/completions", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+g.APIKey)
+	req.Header.Set("HTTP-Referer", "https://github.com/your-app")
+	req.Header.Set("X-Title", "KidsShortsGenerator")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("OpenRouter image request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("OpenRouter image API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Парсим ответ – изображение придёт в формате base64 внутри JSON
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode image response: %w", err)
+	}
+	if len(result.Choices) == 0 || result.Choices[0].Message.Content == "" {
+		return "", fmt.Errorf("empty image response")
+	}
+
+	// Декодируем base64 → JPEG
+	imgBytes, err := base64.StdEncoding.DecodeString(result.Choices[0].Message.Content)
+	if err != nil {
+		return "", fmt.Errorf("decode base64 image: %w", err)
+	}
+
+	os.MkdirAll("backgrounds", 0755)
+	filename := filepath.Join("backgrounds", fmt.Sprintf("openrouter_img_%d.jpg", time.Now().UnixNano()))
+	if err := os.WriteFile(filename, imgBytes, 0644); err != nil {
+		return "", fmt.Errorf("write image file: %w", err)
+	}
+	return filename, nil
 }

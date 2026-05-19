@@ -105,15 +105,6 @@ func main() {
 		YouTubeQueries: []string{
 			fmt.Sprintf("обзор Minecraft %d", currentYear),
 			fmt.Sprintf("аниме топ %d", currentYear),
-			`Minecraft OR Roblox`,
-			`Brawl Stars OR "Adopt Me" OR "Brookhaven"`,
-			fmt.Sprintf(`"новые игры" дети OR подростки %d`, currentYear),
-			fmt.Sprintf(`аниме %d OR "Моя геройская академия"`, currentYear),
-			fmt.Sprintf(`мемы %d смешные`, currentYear),
-			`"Sigma Boy" OR "Гном Гномыч" OR "Likee"`,
-			`"популярные блогеры" дети`,
-			`"школьники" новости интересные`,
-			`"six seven" дети`,
 		},
 		MaxArticles: 1,
 		Dedup:       dedup,
@@ -135,22 +126,20 @@ func main() {
 	os.MkdirAll(filepath.Join("output", "audio"), 0755)
 
 	gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
-	// Создаём GigaChat-генератор промптов
+	// GigaChat-генератор промптов (опционально)
 	gigachatGen, err := generator.NewGigaChatGenerator(os.Getenv("GIGACHAT_API_KEY"))
 	if err != nil {
 		log.Printf("Не удалось создать GigaChat генератор: %v", err)
 	} else {
 		defer gigachatGen.Close()
 	}
-	//twoShotClient := collector.NewTwoShotMusicClient()
-	//hfMusicClient := collector.NewHuggingFaceMusicClient(os.Getenv("HF_API_TOKEN"))
-	hfMusicClient := collector.NewHuggingFaceMusicClient()
-
-	// minimaxMusicClient := collector.NewMiniMaxMusicClient(os.Getenv("MINIMAX_API_KEY"))
+	// Бесплатный клиент для генерации музыки через Hugging Face Gradio
+	//hfMusicClient := collector.NewHuggingFaceMusicClient()
 
 	var (
 		wg      sync.WaitGroup
 		dedupMu sync.Mutex
+		synMu   sync.Mutex // ← новый мьютекс для синтеза речи
 	)
 
 	for i, article := range articles {
@@ -158,13 +147,22 @@ func main() {
 		go func(idx int, art collector.Article) {
 			defer wg.Done()
 
+			// Проверка на недетский контент
 			if !isKidSafe(art.Title, art.Description) {
 				log.Printf("Пропущена неподходящая статья %d: %s", idx+1, art.Title)
+				dedupMu.Lock()
+				dedup.MarkPublished(art.Title) // сохраняем, чтобы не повторять
+				dedupMu.Unlock()
 				return
 			}
+
+			// Генерация сценария
 			scriptJSON, err := gen.GenerateScript(art.Title, art.Description)
 			if err != nil {
 				log.Printf("Ошибка генерации для статьи %d: %v", idx+1, err)
+				dedupMu.Lock()
+				dedup.MarkPublished(art.Title)
+				dedupMu.Unlock()
 				return
 			}
 			fmt.Printf("Сгенерированный сценарий для статьи %d:\n%s\n\n", idx+1, scriptJSON)
@@ -172,44 +170,56 @@ func main() {
 			var script Script
 			if err := json.Unmarshal([]byte(scriptJSON), &script); err != nil {
 				log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
-				return
-			}
-			if script.Skip {
-				log.Printf("Статья %d не подходит для детей: %s", idx+1, art.Title)
 				dedupMu.Lock()
-				if err := dedup.MarkPublished(art.Title); err != nil {
-					log.Printf("Ошибка сохранения заголовка %d: %v", idx+1, err)
-				}
+				dedup.MarkPublished(art.Title)
 				dedupMu.Unlock()
 				return
 			}
+
+			// Проверка маркера skip (невозрастной контент)
+			if script.Skip {
+				log.Printf("Статья %d не подходит для детей: %s", idx+1, art.Title)
+				dedupMu.Lock()
+				dedup.MarkPublished(art.Title)
+				dedupMu.Unlock()
+				return
+			}
+
+			// Озвучка (защищена мьютексом, чтобы имена файлов не пересекались)
+			synMu.Lock()
 			audioPath, err := saluteClient.Synthesize(script.FullText)
 			if err != nil {
+				synMu.Unlock()
 				log.Printf("Ошибка озвучки статьи %d: %v", idx+1, err)
+				dedupMu.Lock()
+				dedup.MarkPublished(art.Title)
+				dedupMu.Unlock()
 				return
 			}
 
-			// Уникальное имя аудио, чтобы горутины не перезаписывали файлы
-			uniqueAudio := filepath.Join("output", "audio", fmt.Sprintf("article_%d_%s", idx+1, filepath.Base(audioPath)))
+			// Уникальное имя аудио
+			uniqueAudio := filepath.Join("output", "audio",
+				fmt.Sprintf("article_%d_%s", idx+1, filepath.Base(audioPath)))
 			if err := os.Rename(audioPath, uniqueAudio); err != nil {
+				synMu.Unlock()
 				log.Printf("Ошибка перемещения аудио %d: %v", idx+1, err)
+				dedupMu.Lock()
+				dedup.MarkPublished(art.Title)
+				dedupMu.Unlock()
 				return
 			}
+			synMu.Unlock()
 			log.Printf("Статья %d озвучена: %s", idx+1, uniqueAudio)
-			// Генерация фоновой музыки через TwoShot (бесплатно, без токена)
 
-			// Формируем ключевые слова из сценария (full_text)
-			// Умные ключевые слова из заголовка статьи
-			// Получаем ключевые слова через ИИ (или fallback)
+			// Ключевые слова для фона
 			var keywords string
 			if aiKeywords, err := gen.ExtractKeywords(art.Title, art.Description); err == nil && len(aiKeywords) > 0 {
 				keywords = strings.Join(aiKeywords, " ")
 			} else {
 				log.Printf("Ошибка получения ключевых слов от ИИ: %v", err)
-				keywords = extractKeywordsFromTitle(art.Title) // старый метод как fallback
+				keywords = extractKeywordsFromTitle(art.Title)
 			}
 			if keywords == "" {
-				// Fallback: пробуем извлечь из полного текста сценария, отбросив первые 3 слова (приветствие)
 				words := strings.Fields(script.FullText)
 				if len(words) > 3 {
 					keywords = transliterate(strings.Join(words[3:], " "))
@@ -223,13 +233,21 @@ func main() {
 			if keywords == "" {
 				keywords = "minecraft gameplay"
 			}
-			// Добавляем случайное число для уникальности
 			keywords = fmt.Sprintf("%s %d", keywords, time.Now().UnixNano()%100)
 			fmt.Println("Ключевые слова для фона:", keywords)
 
-			sources := make(map[string]string) // источник -> путь к видеофайлу
+			sources := make(map[string]string)
+
+			//1. Pexels (стоковое видео) — закомментировано, но оставлено для быстрого включения
+			/*if pexelsVideo, err := compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), keywords, nil); err == nil {
+				sources["pexels"] = pexelsVideo
+				log.Printf("Pexels видео скачано: %s", pexelsVideo)
+			} else {
+				log.Printf("Pexels: %v", err)
+			}*/
+
 			// Генерация фоновой музыки через Hugging Face Gradio
-			if hfMusicClient != nil {
+			/*if hfMusicClient != nil {
 				audioDur, err := compositor.GetAudioDuration(uniqueAudio)
 				if err == nil {
 					durSec := int(audioDur.Seconds())
@@ -249,31 +267,18 @@ func main() {
 				} else {
 					log.Printf("Не удалось определить длительность аудио: %v", err)
 				}
-			}
-			// Генерация промпта для Kandinsky Video (пока только в лог)
-			if gigachatGen != nil {
-				if prompt, err := gigachatGen.GenerateKandinskyPrompt(art.Title, art.Description); err == nil {
-					log.Printf("Промпт для Kandinsky сгенерирован: %s", prompt)
-				} else {
+			}*/
+
+			// Промпт для Kandinsky Video (опционально)
+			/*if gigachatGen != nil {
+				if _, err := gigachatGen.GenerateKandinskyPrompt(art.Title, art.Description); err != nil {
 					log.Printf("Ошибка генерации промпта для Kandinsky: %v", err)
 				}
-			}
-
-			/*// 1. Pexels (стоковое видео)
-			if pexelsVideo, err := compositor.FetchStockVideo(os.Getenv("PEXELS_API_KEY"), keywords, nil); err == nil {
-				sources["pexels"] = pexelsVideo
-			} else {
-				log.Printf("Pexels: %v", err)
 			}*/
 
-			/*// Invidious (альтернативный поиск по YouTube)
-			if pipedVideo, err := collector.FetchPipedVideo(keywords); err == nil {
-				sources["piped"] = pipedVideo
-				log.Printf("Piped видео скачано: %s", pipedVideo)
-			} else {
-				log.Printf("Piped: %v", err)
-			}*/
-			// 2. Яндекс.Картинки через OpenSERP – передаём русские ключевые слова
+			// Яндекс.Картинки
+			// Задержка, чтобы не упереться в лимит OpenSERP при параллельных запросах
+			time.Sleep(2 * time.Second)
 			yandexQuery := extractRussianKeywords(art.Title)
 			if yandexQuery == "" {
 				yandexQuery = strings.TrimSpace(art.Title)
@@ -284,7 +289,6 @@ func main() {
 					downloadedImages := downloadImagesConcurrently(yandexImages, fmt.Sprintf("yandex_%d", idx+1), 10*time.Second, 5)
 
 					if len(downloadedImages) < 10 {
-						// Фолбэк‑запрос с общими словами
 						fallbackQuery := "яркие картинки дети"
 						if fbImages, err := collector.FetchYandexImages(fallbackQuery, 20); err == nil {
 							moreImages := downloadImagesConcurrently(fbImages, fmt.Sprintf("yandex_fb_%d", idx+1), 10*time.Second, 5)
@@ -292,7 +296,7 @@ func main() {
 						}
 					}
 					if len(downloadedImages) > 0 {
-						slideshowVideo := filepath.Join("output", "slideshow_yandex.mp4")
+						slideshowVideo := filepath.Join("output", fmt.Sprintf("slideshow_yandex_%d.mp4", idx+1))
 						if err := compositor.CreateSlideshow(downloadedImages, slideshowVideo); err == nil {
 							sources["yandex_images"] = slideshowVideo
 						} else {
@@ -304,47 +308,49 @@ func main() {
 				}
 			}
 
-			/*// 3. YouTube (скачиваем через yt-dlp)
-			if ytVideo, err := collector.FetchYouTubeBackground(keywords); err == nil {
-				sources["youtube"] = ytVideo
-			} else {
-				log.Printf("YouTube: %v", err)
-			}*/
+			/*
+				// Генерация 5 фоновых картинок через Pollinations (последовательно, с повторными попытками)
+				if true {
+					var genImages []string
 
-			/*// 4. Rutube (API + yt-dlp)
-			if rutubeRef, err := collector.FetchRutubeVideo(keywords); err == nil {
-				data, _ := os.ReadFile(rutubeRef)
-				url := strings.TrimSpace(strings.Split(string(data), "\n")[0])
-				if downloaded, err := collector.DownloadWithYtDlp(url); err == nil {
-					sources["rutube"] = downloaded
-				} else {
-					log.Printf("Rutube download: %v", err)
-				}
-			} else {
-				log.Printf("Rutube: %v", err)
-			}*/
-
-			/*// 5. VK Video (API + yt-dlp)
-			if vkToken := os.Getenv("VK_ACCESS_TOKEN"); vkToken != "" {
-				if vkRef, err := collector.FetchVKVideo(vkToken, keywords); err == nil {
-					data, _ := os.ReadFile(vkRef)
-					url := strings.TrimSpace(strings.Split(string(data), "\n")[0])
-					if downloaded, err := collector.DownloadWithYtDlp(url); err == nil {
-						sources["vk"] = downloaded
-					} else {
-						log.Printf("VK download: %v", err)
+					prompts := []string{
+						fmt.Sprintf("Colorful cartoon illustration for kids about %s, bright colors, fun and engaging", art.Title),
+						fmt.Sprintf("Playful background for children video about %s, children's book style, happy mood", art.Title),
+						fmt.Sprintf("Dynamic action scene for kids video about %s, adventure, vibrant colors", art.Title),
+						fmt.Sprintf("Smiling characters illustration for kids video about %s, cute, flat design", art.Title),
+						fmt.Sprintf("Educational style illustration for kids video about %s, simple, clean, colorful", art.Title),
 					}
-				} else {
-					log.Printf("VK: %v", err)
-				}
-			}*/
 
-			// Сборка готовых видео для каждого источника
+					for _, prompt := range prompts {
+						imgPath, err := collector.FetchPollinationsImageWithRetry(prompt, 3) // до 3 попыток
+						if err != nil {
+							log.Printf("Pollinations ошибка генерации: %v", err)
+							continue
+						}
+						genImages = append(genImages, imgPath)
+						log.Printf("Pollinations изображение сгенерировано: %s", imgPath)
+						time.Sleep(2 * time.Second) // задержка между запросами, чтобы не перегружать
+					}
+
+					if len(genImages) >= 3 {
+						slideshowVideo := filepath.Join("output", fmt.Sprintf("slideshow_pollinations_%d.mp4", idx+1))
+						if err := compositor.CreateSlideshow(genImages, slideshowVideo); err == nil {
+							sources["pollinations"] = slideshowVideo
+							log.Printf("Pollinations слайд-шоу собрано: %s", slideshowVideo)
+						} else {
+							log.Printf("Ошибка сборки Pollinations слайд-шоу: %v", err)
+						}
+					} else {
+						log.Printf("Pollinations: сгенерировано недостаточно изображений для слайд-шоу (%d из 5)", len(genImages))
+					}
+				}
+			*/
+			// Сборка видео для каждого источника
 			for source, bgPath := range sources {
 				if bgPath == "" {
 					continue
 				}
-				videoOutput := filepath.Join("output", fmt.Sprintf("video_%s.mp4", source))
+				videoOutput := filepath.Join("output", fmt.Sprintf("video_%s_%d.mp4", source, idx+1))
 				if err := compositor.ComposeVertical(compositor.ComposeParams{
 					AudioPath:  uniqueAudio,
 					Subtitles:  script.Subtitles,
@@ -355,6 +361,8 @@ func main() {
 					fmt.Printf("✅ Видео %s собрано: %s\n", source, videoOutput)
 				}
 			}
+
+			// Отчёт о пропущенных источниках
 			missing := []string{}
 			for _, name := range []string{"youtube", "rutube", "vk", "images", "pexels"} {
 				if _, ok := sources[name]; !ok {
@@ -366,7 +374,7 @@ func main() {
 			}
 			fmt.Println("\nГотово! Все варианты в папке output/. Выберите лучший.")
 
-			// ✅ После успешной сборки – помечаем как опубликованную
+			// Сохраняем статью как обработанную
 			dedupMu.Lock()
 			if err := dedup.MarkPublished(art.Title); err != nil {
 				log.Printf("Ошибка сохранения заголовка %d: %v", idx+1, err)
@@ -379,7 +387,8 @@ func main() {
 	fmt.Println("Все статьи обработаны.")
 }
 
-// Стоп-слова (русские и английские), которые не несут тематической нагрузки
+// --- Вспомогательные функции ---
+
 var stopWords = map[string]bool{
 	"и": true, "в": true, "на": true, "с": true, "по": true, "для": true, "от": true, "к": true,
 	"у": true, "за": true, "из": true, "до": true, "об": true, "под": true, "над": true,
@@ -411,9 +420,7 @@ var stopWords = map[string]bool{
 	"very": true, "just": true, "now": true, "here": true, "there": true,
 }
 
-// extractKeywordsFromTitle извлекает значимые слова из заголовка, отбрасывая стоп-слова, и транслитерирует.
 func extractKeywordsFromTitle(title string) string {
-	// Удаляем знаки препинания, оставляем буквы, цифры и пробелы
 	var clean strings.Builder
 	for _, r := range title {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
@@ -437,7 +444,6 @@ func extractKeywordsFromTitle(title string) string {
 	return transliterate(strings.Join(meaningful, " "))
 }
 
-// transliterate простая транслитерация русских букв в латиницу.
 func transliterate(s string) string {
 	repl := strings.NewReplacer(
 		"а", "a", "б", "b", "в", "v", "г", "g", "д", "d", "е", "e", "ё", "yo",
@@ -454,25 +460,6 @@ func transliterate(s string) string {
 	return repl.Replace(s)
 }
 
-func downloadImage(url, filepath string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad status: %d", resp.StatusCode)
-	}
-	file, err := os.Create(filepath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = io.Copy(file, resp.Body)
-	return err
-}
-
-// extractRussianKeywords возвращает до 5 значимых русских слов из заголовка (без транслитерации).
 func extractRussianKeywords(title string) string {
 	var clean strings.Builder
 	for _, r := range title {
@@ -516,35 +503,31 @@ func downloadImageWithTimeout(url, filepath string, timeout time.Duration) error
 	if err != nil {
 		return err
 	}
-	// Проверяем размер файла (минимум 1 КБ)
 	info, err := file.Stat()
 	if err != nil {
 		os.Remove(filepath)
-		return fmt.Errorf("не удалось получить размер файла: %w", err)
+		return fmt.Errorf("stat: %w", err)
 	}
 	if info.Size() < 1024 {
 		os.Remove(filepath)
-		return fmt.Errorf("файл слишком маленький (%d байт)", info.Size())
+		return fmt.Errorf("file too small (%d bytes)", info.Size())
 	}
 	return nil
 }
 
-// downloadImagesConcurrently скачивает массив URL в несколько горутин (до maxConcurrent).
-// Возвращает список локальных путей к успешно скачанным файлам.
 func downloadImagesConcurrently(urls []string, prefix string, timeout time.Duration, maxConcurrent int) []string {
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
 		results []string
-		sem     = make(chan struct{}, maxConcurrent) // семафор
+		sem     = make(chan struct{}, maxConcurrent)
 	)
-
 	for i, imgURL := range urls {
 		wg.Add(1)
 		go func(idx int, url string) {
 			defer wg.Done()
-			sem <- struct{}{}        // занимаем слот
-			defer func() { <-sem }() // освобождаем слот
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			destFile := filepath.Join("backgrounds", fmt.Sprintf("%s_%d.jpg", prefix, idx))
 			if err := downloadImageWithTimeout(url, destFile, timeout); err != nil {
 				log.Printf("Не удалось скачать %s: %v", url, err)
@@ -558,13 +541,4 @@ func downloadImagesConcurrently(urls []string, prefix string, timeout time.Durat
 	}
 	wg.Wait()
 	return results
-}
-
-// Функция для музыки – только 3 главных слова
-func extractMusicQuery(title string) string {
-	words := strings.Fields(extractRussianKeywords(title))
-	if len(words) > 3 {
-		words = words[:3]
-	}
-	return strings.Join(words, " ")
 }
