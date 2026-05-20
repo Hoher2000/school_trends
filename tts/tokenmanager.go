@@ -3,7 +3,6 @@ package tts
 import (
 	"crypto/rand"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,9 +12,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	easyjson "github.com/mailru/easyjson"
 )
 
 // TokenResponse – ответ OAuth-сервера
+//
+//easyjson:json
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	ExpiresIn    int    `json:"expires_in"`
@@ -37,6 +40,13 @@ type TokenManager struct {
 	doneCh       chan struct{}
 	httpClient   *http.Client
 	stopOnce     sync.Once
+}
+
+//easyjson:json
+type SavedToken struct {
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 // NewTokenManager создаёт менеджер токенов
@@ -119,7 +129,7 @@ func (tm *TokenManager) refreshTokenNow() error {
 	maxRetries := 3
 	baseDelay := time.Second
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		if attempt > 0 {
 			delay := baseDelay * time.Duration(1<<(attempt-1)) // 1s, 2s, 4s
 			log.Printf("[TokenManager] Повторная попытка %d/%d через %v", attempt+1, maxRetries, delay)
@@ -165,8 +175,8 @@ func (tm *TokenManager) refreshTokenNow() error {
 			continue
 		}
 
-		var tokenResp TokenResponse
-		if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		tokenResp := TokenResponse{}
+		if err := easyjson.UnmarshalFromReader(resp.Body, &tokenResp); err != nil {
 			return fmt.Errorf("ошибка парсинга ответа: %w", err)
 		}
 
@@ -192,10 +202,10 @@ func generateRqUID() string {
 
 // вспомогательные методы для кэширования токена в файл
 func (tm *TokenManager) saveToFile(path string) {
-	data, _ := json.Marshal(map[string]interface{}{
-		"access_token":  tm.currentToken,
-		"refresh_token": tm.refreshToken,
-		"expires_at":    tm.expiresAt.Format(time.RFC3339),
+	data, _ := easyjson.Marshal(&SavedToken{
+		AccessToken:  tm.currentToken,
+		RefreshToken: tm.refreshToken,
+		ExpiresAt:    tm.expiresAt,
 	})
 	os.WriteFile(path, data, 0600)
 }
@@ -205,19 +215,11 @@ func (tm *TokenManager) loadFromFile(path string) {
 	if err != nil {
 		return
 	}
-	var saved map[string]interface{}
-	if err := json.Unmarshal(data, &saved); err != nil {
+	saved := &SavedToken{}
+	if err := easyjson.Unmarshal(data, saved); err != nil {
 		return
 	}
-	if token, ok := saved["access_token"].(string); ok {
-		tm.currentToken = token
-	}
-	if refresh, ok := saved["refresh_token"].(string); ok {
-		tm.refreshToken = refresh
-	}
-	if expStr, ok := saved["expires_at"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, expStr); err == nil {
-			tm.expiresAt = t
-		}
-	}
+	tm.currentToken = saved.AccessToken
+	tm.refreshToken = saved.RefreshToken
+	tm.expiresAt = saved.ExpiresAt
 }

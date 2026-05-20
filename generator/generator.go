@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+//easyjson:json
+type Script struct {
+	FullText  string   `json:"full_text"`
+	Subtitles []string `json:"subtitles"`
+	Skip      bool     `json:"skip,omitempty"`
+}
+
 type OpenRouterGenerator struct {
 	APIKey  string
 	Model   string
