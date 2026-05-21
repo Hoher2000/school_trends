@@ -50,8 +50,8 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 	systemPrompt := `Ты — строгий модератор и креативный продюсер детского канала (аудитория 7-13 лет).
 Сначала оцени, подходит ли новость для детей 7-13 лет.
 НЕ подходят темы: политика, война, экономика, IT‑конференции, работа, налоги, недвижимость, криминал, взрослые отношения, трагедии, жестокость.
-ПОДХОДЯТ темы: игры (Minecraft, Roblox, Brawl Stars и др.), аниме, мемы, блогеры, школьные новости, интересные события, наука для детей, животные, спорт.
-ВАЖНО: новости об играх считаются ПОДХОДЯЩИМИ, даже если в них упоминаются слова "ограничения", "блокировка", "Россия", "закон" и т.п. Пример: "Что происходит с метавселенными после ограничения Roblox в России" – это ПОДХОДЯЩАЯ новость, потому что она про игру Roblox.
+ПОДХОДЯТ темы: игры (Minecraft, Roblox, Brawl Stars и др.), аниме, мемы, блогеры, школьные новости, интересные события, наука для детей, животные, спорт, TikTok-тренды, челленджи, вирусные видео.
+ВАЖНО: новости о TikTok, челленджах, мемах и вирусных трендах считаются ПОДХОДЯЩИМИ, даже если в них упоминаются слова "ограничения", "блокировка", "Россия", "закон" и т.п.
 Если новость НЕ подходит, верни СТРОГО {"skip":true} и больше ничего.
 Если новость ПОДХОДИТ, создай сценарий для вертикального видео (Shorts) длительностью 30 секунд.
 Разбей на 6 коротких предложений для субтитров (каждое ~5 сек).
@@ -112,6 +112,119 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 		return "", fmt.Errorf("no JSON found in response even after strict prompt: %s", content)
 	}
 	return jsonStr, nil
+}
+
+// NewsItem — структура для новости, возвращаемой ИИ
+type NewsItem struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Link        string `json:"link"`
+}
+
+// generator/generator.go
+
+// FetchTrendingNews запрашивает у Groq/OpenRouter трендовые новости для детей 9-13 лет.
+func (g *OpenRouterGenerator) FetchTrendingNews() ([]NewsItem, error) {
+	systemPrompt := `Ты — редактор суперпопулярного детского канала (аудитория 9-13 лет).
+Найди 3 САМЫЕ ОБСУЖДАЕМЫЕ И ВИРУСНЫЕ новости в России прямо сейчас, которые точно заинтересуют детей этого возраста.
+Запрещено: скучные официальные новости, политика, экономика, взрослые темы.
+Обязательно: мемы, тренды TikTok/YouTube, игры (Minecraft, Roblox, Brawl Stars), аниме, необычные челленджи, смешные ситуации, научные открытия, крутые гаджеты.
+Верни СТРОГО JSON-массив объектов с полями title (заголовок), description (краткое описание) и link (ссылка на источник).`
+
+	content, err := g.callAPI(systemPrompt, "Самые вирусные новости для школьников прямо сейчас")
+	if err != nil {
+		return nil, err
+	}
+
+	return parseNewsJSON(content)
+}
+
+func (g *OpenRouterGenerator) FetchTrendingNewsFallback() ([]NewsItem, error) {
+	systemPrompt := `Ты ищешь новости для детского канала. Темы: новые мемы, тренды TikTok, обновления игр, аниме, челленджи, смешные истории из школ, необычные животные, крутые изобретения.
+Верни JSON-массив с полями title, description, link.`
+
+	content, err := g.callAPI(systemPrompt, "Что сегодня обсуждают дети 9-13 лет")
+	if err != nil {
+		return nil, err
+	}
+
+	return parseNewsJSON(content)
+}
+
+// parseNewsJSON собирает все JSON‑объекты новостей из ответа, даже если они разделены ][.
+func parseNewsJSON(content string) ([]NewsItem, error) {
+	jsonStr, err := extractJSON(content)
+	if err != nil {
+		return nil, fmt.Errorf("extractJSON: %w", err)
+	}
+
+	log.Printf("Сырой JSON от Groq:\n%s", jsonStr)
+
+	// Склеиваем несколько массивов, разделённых ][, в один
+	merged := strings.ReplaceAll(jsonStr, "][", ",")
+
+	cleaned := cleanJSON(merged)
+
+	var items []NewsItem
+	if err := json.Unmarshal([]byte(cleaned), &items); err != nil {
+		// Если массив не получилось распарсить, пробуем извлечь все объекты вручную
+		items = extractObjects(cleaned)
+		if len(items) > 0 {
+			return items, nil
+		}
+		return nil, fmt.Errorf("unmarshal news items: %w (cleaned: %s)", err, cleaned)
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("пустой список новостей")
+	}
+	return items, nil
+}
+
+// cleanJSON удаляет висячие запятые и всё после последней ']'
+func cleanJSON(raw string) string {
+	s := strings.ReplaceAll(raw, ",]", "]")
+	s = strings.ReplaceAll(s, ",}", "}")
+	s = strings.TrimRight(s, " \t\n\r")
+	if strings.HasSuffix(s, ",") {
+		s = s[:len(s)-1]
+	}
+	if idx := strings.LastIndex(s, "]"); idx != -1 {
+		s = s[:idx+1]
+	}
+	// Убираем переносы строк и лишние пробелы
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\t", "")
+	// Заменяем два и более пробелов на один
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	return s
+}
+
+// extractObjects извлекает все JSON‑объекты из строки, даже если они не в массиве
+func extractObjects(s string) []NewsItem {
+	var items []NewsItem
+	depth := 0
+	start := -1
+	for i, ch := range s {
+		if ch == '{' {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		} else if ch == '}' {
+			depth--
+			if depth == 0 && start != -1 {
+				objStr := s[start : i+1]
+				var item NewsItem
+				if err := json.Unmarshal([]byte(objStr), &item); err == nil {
+					items = append(items, item)
+				}
+				start = -1
+			}
+		}
+	}
+	return items
 }
 
 // callAPI отправляет запрос и возвращает содержимое ответа.

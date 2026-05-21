@@ -75,9 +75,35 @@ func main() {
 		Dedup:          dedup,
 	}
 
-	articles, err := collector.CollectTrends(params)
+	// Создание генератора (уже есть в твоём main.go)
+	gen := generator.NewGroq(os.Getenv("GROQ_API_KEY")) // ← используем Groq
+
+	var articles []collector.Article
+	// === Замена блока сбора новостей ===
+	// Пытаемся получить новости от ИИ
+	newsItems, err := gen.FetchTrendingNews()
+	if err != nil || len(newsItems) == 0 {
+		log.Printf("⚠️ Первый запрос не дал новостей, пробую уточнённый запрос...")
+		newsItems, err = gen.FetchTrendingNewsFallback()
+	}
 	if err != nil {
-		log.Fatalf("collect error: %v", err)
+		log.Printf("⚠️ ИИ не смог найти новости: %v. Использую старый RSS-поиск.", err)
+		articles, err = collector.CollectTrends(params)
+		if err != nil {
+			log.Fatalf("collect error: %v", err)
+		}
+	} else {
+		// Преобразуем ответ ИИ в слайс Article, с которым умеет работать пайплайн
+		articles = make([]collector.Article, len(newsItems))
+		for i, ni := range newsItems {
+			articles[i] = collector.Article{
+				Title:       ni.Title,
+				Description: ni.Description,
+				Link:        ni.Link,
+				Source:      "AI",
+				Published:   time.Now(), // важно для сортировки в коллекторе
+			}
+		}
 	}
 
 	fmt.Println("Собрано статей:", len(articles))
@@ -90,7 +116,7 @@ func main() {
 	os.MkdirAll("output", 0755)
 	os.MkdirAll(filepath.Join("output", "audio"), 0755)
 
-	gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
+	//gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
 	// GigaChat-генератор промптов (опционально)
 	/*gigachatGen, err := generator.NewGigaChatGenerator(os.Getenv("GIGACHAT_API_KEY"))
 	if err != nil {
