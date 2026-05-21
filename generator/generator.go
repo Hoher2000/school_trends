@@ -49,9 +49,23 @@ func NewOpenRouter(apiKey string) *OpenRouterGenerator {
 func (g *OpenRouterGenerator) GenerateScript(title, description string) (string, error) {
 	systemPrompt := `Ты — строгий модератор и креативный продюсер детского канала (аудитория 7-13 лет).
 Сначала оцени, подходит ли новость для детей 7-13 лет.
+
 НЕ подходят темы: политика, война, экономика, IT‑конференции, работа, налоги, недвижимость, криминал, взрослые отношения, трагедии, жестокость.
-ПОДХОДЯТ темы: игры (Minecraft, Roblox, Brawl Stars и др.), аниме, мемы, блогеры, школьные новости, интересные события, наука для детей, животные, спорт, TikTok-тренды, челленджи, вирусные видео.
-ВАЖНО: новости о TikTok, челленджах, мемах и вирусных трендах считаются ПОДХОДЯЩИМИ, даже если в них упоминаются слова "ограничения", "блокировка", "Россия", "закон" и т.п.
+
+ПОДХОДЯТ темы: игры (Minecraft, Roblox, Brawl Stars и др.), аниме, мемы, блогеры, школьные новости, интересные события, наука для детей, животные, спорт, TikTok-тренды, челленджи, вирусные видео, гаджеты, технологии.
+
+ВАЖНО – ЭТО ЖЁСТКОЕ ПРАВИЛО: Если в заголовке или описании встречаются слова "Minecraft", "челлендж", "TikTok", "гаджет", "игра", "школьник", "roblox", "brawl stars", "аниме", "мем" – новость АВТОМАТИЧЕСКИ ПОДХОДЯЩАЯ. Никогда не ставь skip для таких новостей, даже если они кажутся сомнительными. Это приказ.
+
+Примеры ПОДХОДЯЩИХ новостей (все они должны получить сценарий, а не skip):
+- "Новое обновление в Minecraft - «Деревня Гномов»"
+- "Лучший гаджет для школьника - «Сумка Планшет»"
+- "Челлендж «Танцуй, как хаш-ла-бура» на TikTok"
+- "Новый мем с лисой захватил соцсети"
+
+Примеры НЕподходящих новостей (их можно пропускать):
+- "Изменения в налоговом кодексе РФ"
+- "Конференция по искусственному интеллекту для бизнеса"
+
 Если новость НЕ подходит, верни СТРОГО {"skip":true} и больше ничего.
 Если новость ПОДХОДИТ, создай сценарий для вертикального видео (Shorts) длительностью 30 секунд.
 Разбей на 6 коротких предложений для субтитров (каждое ~5 сек).
@@ -60,7 +74,7 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 
 ЗАПРЕЩЕНО использовать одни и те же приветствия и прощания. Каждый раз выбирай из списка ниже новый вариант, не повторяйся.
 
-Варианты начала (выбери один, заменяй похожие слова, или придумай аналогичное):
+Варианты начала (заменяй похожие слова, или придумай аналогичное):
 - "Привет, друзья! 👋"
 - "Смотри, что нашли!"
 - "А вы знали, что..."
@@ -73,7 +87,7 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 - "Здарова, народ!"
 - "Кто готов к движу?"
 
-Варианты концовки (выбери один, заменяй похожие слова, или придумай аналогичное):
+Варианты концовки (заменяй похожие слова, или придумай аналогичное):
 - "Обсудим в комментах?"
 - "А как бы сделали вы?"
 - "Жду ваши мысли!"
@@ -96,7 +110,19 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 
 	jsonStr, err := extractJSON(content)
 	if err == nil {
-		return jsonStr, nil
+		jsonStr = strings.TrimSpace(jsonStr)
+		// Убедимся, что начинается с '{' и заканчивается '}'
+		if strings.HasPrefix(jsonStr, "{") && strings.HasSuffix(jsonStr, "}") {
+			return jsonStr, nil
+		}
+		// Если extractJSON вернул что-то не то, обрежем до первого объекта
+		if idx := strings.Index(jsonStr, "{"); idx != -1 {
+			jsonStr = jsonStr[idx:]
+			if end := strings.LastIndex(jsonStr, "}"); end != -1 {
+				jsonStr = jsonStr[:end+1]
+			}
+			return jsonStr, nil
+		}
 	}
 
 	// JSON не найден — пробуем строгий промпт
@@ -110,6 +136,13 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 	jsonStr, err = extractJSON(content)
 	if err != nil {
 		return "", fmt.Errorf("no JSON found in response even after strict prompt: %s", content)
+	}
+	jsonStr = strings.TrimSpace(jsonStr)
+	if idx := strings.Index(jsonStr, "{"); idx != -1 {
+		jsonStr = jsonStr[idx:]
+		if end := strings.LastIndex(jsonStr, "}"); end != -1 {
+			jsonStr = jsonStr[:end+1]
+		}
 	}
 	return jsonStr, nil
 }
@@ -135,7 +168,7 @@ func (g *OpenRouterGenerator) FetchTrendingNews() ([]NewsItem, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	log.Printf("Сырой ответ от Groq (тренды):\n%s", content)
 	return parseNewsJSON(content)
 }
 
@@ -147,7 +180,7 @@ func (g *OpenRouterGenerator) FetchTrendingNewsFallback() ([]NewsItem, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	log.Printf("Сырой ответ от Groq (фолбэк):\n%s", content)
 	return parseNewsJSON(content)
 }
 
