@@ -28,7 +28,7 @@ func FetchYandexImages(query string, limit int) ([]string, error) {
 	}
 	q := u.Query()
 	q.Set("text", query)
-	q.Set("limit", "40")
+	q.Set("limit", "30")
 	q.Set("family", "2")
 	u.RawQuery = q.Encode()
 
