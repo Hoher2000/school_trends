@@ -112,3 +112,26 @@ func ExtractRussianKeywords(title string) string {
 	}
 	return strings.Join(meaningful, " ")
 }
+
+// extractRussianNouns оставляет слова длиннее 3 букв, удаляя стоп-слова
+func ExtractRussianNouns(title string) string {
+	stopWords := map[string]bool{
+		"это": true, "как": true, "что": true, "для": true, "новый": true,
+		"самый": true, "ещё": true, "уже": true, "очень": true, "быть": true,
+		"весь": true, "они": true, "она": true, "оно": true, "там": true,
+		"где": true, "когда": true, "почему": true, "зачем": true, "или": true,
+		"под": true, "над": true, "перед": true, "около": true, "через": true,
+	}
+	words := strings.Fields(title)
+	var clean []string
+	for _, w := range words {
+		w = strings.TrimSpace(w)
+		if len([]rune(w)) > 3 && !stopWords[strings.ToLower(w)] {
+			clean = append(clean, w)
+		}
+	}
+	if len(clean) == 0 {
+		return title
+	}
+	return strings.Join(clean, " ")
+}

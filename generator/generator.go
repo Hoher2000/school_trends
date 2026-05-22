@@ -330,13 +330,12 @@ func extractJSON(raw string) (string, error) {
 
 // ExtractKeywords возвращает 7-10 английских ключевых слов по заголовку и описанию новости.
 func (g *OpenRouterGenerator) ExtractKeywords(title, description string) ([]string, error) {
-	systemPrompt := `You are a helpful assistant that extracts keywords from Russian news headlines and descriptions for a kids' channel (ages 7-13). 
-The keywords will be used to search for background videos and images.
-Extract 5-7 very specific and relevant English keywords, prioritizing rare or unique words from the text (like proper names, game titles, specific events). 
-Avoid generic terms like "social media", "internet", "popular", "online", "trending" unless they are the only relevant words.
-Return ONLY a JSON array of strings, without markdown.`
+	systemPrompt := `Ты — помощник для поиска картинок. Извлеки из новости 5-7 КЛЮЧЕВЫХ СЛОВ на РУССКОМ языке, которые лучше всего описывают её тему.
+Это могут быть: имена собственные, названия игр, аниме, мемов, персонажей, действий, объектов.
+НЕ включай: приветствия, общие фразы ("новость дня", "смотрите"), предлоги, союзы.
+Верни СТРОГО JSON-массив строк.`
 
-	userPrompt := fmt.Sprintf("Title: %s\nDescription: %s", title, description)
+	userPrompt := fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description)
 
 	reqBody := map[string]interface{}{
 		"model": g.Model,

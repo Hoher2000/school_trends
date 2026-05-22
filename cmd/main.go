@@ -190,28 +190,23 @@ func main() {
 			ch <- nil
 		}(&uniqueAudioPath, saluteErrorChan)
 		// Ключевые слова для фона
+		// 1. Пытаемся получить ключевые слова от ИИ (русские)
 		var keywords string
 		if aiKeywords, err := gen.ExtractKeywords(art.Title, art.Description); err == nil && len(aiKeywords) > 0 {
 			keywords = strings.Join(aiKeywords, " ")
+			log.Printf("Ключевые слова от ИИ: %s", keywords)
 		} else {
-			log.Printf("Ошибка получения ключевых слов от ИИ: %v", err)
-			keywords = utils.ExtractKeywordsFromTitle(art.Title)
+			// 2. Fallback: вытаскиваем значимые слова из заголовка
+			keywords = utils.ExtractRussianNouns(art.Title)
+			log.Printf("ИИ не дал ключевых слов, fallback: %s", keywords)
 		}
+
+		// 3. Добавляем уточнение для поиска
 		if keywords == "" {
-			words := strings.Fields(script.FullText)
-			if len(words) > 3 {
-				keywords = utils.Transliterate(strings.Join(words[3:], " "))
-			} else {
-				keywords = utils.Transliterate(script.FullText)
-			}
+			keywords = "яркие картинки дети"
+		} else {
+			keywords += " рисунок арт яркий"
 		}
-		if keywords == "" {
-			keywords = compositor.ExtractKeywords(art.Title)
-		}
-		if keywords == "" {
-			keywords = "minecraft gameplay"
-		}
-		keywords = fmt.Sprintf("%s %d", keywords, time.Now().UnixNano()%100)
 		fmt.Println("Ключевые слова для фона:", keywords)
 
 		sources := make(map[string]string)
@@ -233,7 +228,10 @@ func main() {
 
 		// Яндекс.Картинки
 		// Задержка, чтобы не упереться в лимит OpenSERP при параллельных запросах
-		yandexQuery := utils.ExtractRussianKeywords(art.Title)
+
+		//yandexQuery := utils.ExtractRussianKeywords(art.Title)
+		yandexQuery := keywords
+		fmt.Println("Ключевые слова для фона яндекс:", yandexQuery)
 		if yandexQuery == "" {
 			yandexQuery = strings.TrimSpace(art.Title)
 		}
