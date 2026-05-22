@@ -163,7 +163,10 @@ func main() {
 			log.Printf("Статья %d не подходит для детей: %s", idx+1, art.Title)
 			continue
 		}
-
+		if len(script.Subtitles) == 0 && script.FullText != "" {
+			script.Subtitles = utils.SplitIntoSubtitles(script.FullText)
+			log.Printf("Субтитры для статьи %d сгенерированы из full_text", idx+1)
+		}
 		var uniqueAudioPath string
 		saluteErrorChan := make(chan error)
 		go func(uap *string, ch chan error) {
