@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
@@ -103,6 +104,10 @@ func main() {
 				Source:      "AI",
 				Published:   time.Now(), // важно для сортировки в коллекторе
 			}
+			if ni.Link == "" {
+				// сгенерировать ссылку из заголовка, например хэш
+				ni.Link = fmt.Sprintf("ai-%x", sha256.Sum256([]byte(ni.Title)))
+			}
 		}
 	}
 
@@ -164,6 +169,7 @@ func main() {
 		go func(uap *string, ch chan error) {
 			var err error
 			var audioPath string
+			defer os.Remove(audioPath) // если переименование не удалось
 			audioPath, err = saluteClient.Synthesize(script.FullText)
 			if err != nil {
 				log.Printf("Ошибка озвучки статьи %d: %v", idx+1, err)

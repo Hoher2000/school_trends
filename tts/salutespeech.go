@@ -84,7 +84,7 @@ func (sc *SaluteClient) Synthesize(text string) (string, error) {
 
 	outputDir := "audio"
 	os.MkdirAll(outputDir, 0755)
-	filename := fmt.Sprintf("audio_salute_%s.wav", time.Now().Format("150405"))
+	filename := fmt.Sprintf("audio_salute_%s_%d.wav", time.Now().Format("150405"), time.Now().UnixNano()%1000)
 	fullPath := filepath.Join(outputDir, filename)
 	if err := os.WriteFile(fullPath, audioData, 0644); err != nil {
 		return "", fmt.Errorf("write file: %w", err)
