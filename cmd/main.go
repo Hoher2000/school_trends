@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"log"
@@ -154,20 +155,69 @@ func main() {
 
 		script := &generator.Script{}
 		if err := easyjson.Unmarshal([]byte(scriptJSON), script); err != nil {
-			log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
-			continue
+			// Возможно, ответ содержит два JSON-объекта (skip:false и сам сценарий)
+			if bytes.Contains([]byte(scriptJSON), []byte(`"skip":false`)) {
+				// Пытаемся извлечь второй JSON-объект
+				parts := bytes.SplitN([]byte(scriptJSON), []byte(`}`), 2)
+				if len(parts) == 2 {
+					remaining := bytes.TrimLeft(parts[1], " \t\r\n")
+					if bytes.HasPrefix(remaining, []byte(`{`)) {
+						secondJSON := remaining
+						if idxEnd := bytes.LastIndex(secondJSON, []byte(`}`)); idxEnd != -1 {
+							secondJSON = secondJSON[:idxEnd+1]
+						}
+						if err2 := easyjson.Unmarshal(secondJSON, script); err2 == nil {
+							log.Printf("Извлечён сценарий из второго JSON-объекта")
+						} else {
+							log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
+							continue
+						}
+					} else {
+						log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
+						continue
+					}
+				} else {
+					log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
+					continue
+				}
+			} else {
+				log.Printf("Ошибка парсинга сценария %d: %v", idx+1, err)
+				continue
+			}
 		}
 
 		// Проверка маркера skip (невозрастной контент)
 		if script.Skip {
-			log.Printf("Статья %d не подходит для детей: %s", idx+1, art.Title)
-			continue
+			// Дополнительная проверка: если заголовок содержит ключевые слова, не пропускаем
+			titleLower := strings.ToLower(art.Title)
+			if strings.Contains(titleLower, "minecraft") || strings.Contains(titleLower, "roblox") ||
+				strings.Contains(titleLower, "brawl stars") || strings.Contains(titleLower, "аниме") ||
+				strings.Contains(titleLower, "тикток") || strings.Contains(titleLower, "tiktok") ||
+				strings.Contains(titleLower, "челлендж") || strings.Contains(titleLower, "мем") ||
+				strings.Contains(titleLower, "наруто") {
+				log.Printf("Skip переопределён для статьи %d: %s", idx+1, art.Title)
+				script.Skip = false
+				// Принудительно генерируем сценарий с более мягким промптом
+				scriptJSON, err = gen.GenerateScriptForced(art.Title, art.Description)
+				if err != nil {
+					log.Printf("Не удалось перегенерировать сценарий: %v", err)
+					continue
+				}
+				script = &generator.Script{}
+				if err := easyjson.Unmarshal([]byte(scriptJSON), script); err != nil {
+					log.Printf("Ошибка парсинга перегенерированного сценария: %v", err)
+					continue
+				}
+			} else {
+				log.Printf("Статья %d не подходит для детей: %s", idx+1, art.Title)
+				continue
+			}
 		}
 		if len(script.Subtitles) == 0 && script.FullText != "" {
 			script.Subtitles = utils.SplitIntoSubtitles(script.FullText)
 			log.Printf("Субтитры для статьи %d сгенерированы из full_text", idx+1)
 		}
-	
+
 		var uniqueAudioPath string
 		saluteErrorChan := make(chan error)
 		go func(uap *string, ch chan error) {
