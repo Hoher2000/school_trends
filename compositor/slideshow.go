@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -14,7 +15,14 @@ func CreateSlideshow(imagePaths []string, outputPath string) error {
 	var valid []string
 	for _, p := range imagePaths {
 		if isProbablyImage(p) {
-			valid = append(valid, p)
+			// Конвертируем в JPEG, если файл не JPEG, чтобы избежать проблем с png_pipe/webp
+			jpgPath := strings.TrimSuffix(p, filepath.Ext(p)) + ".jpg"
+			if err := convertToJPEG(p, jpgPath); err == nil {
+				valid = append(valid, jpgPath)
+			} else {
+				// Если конвертация не удалась, но файл валиден, оставляем как есть
+				valid = append(valid, p)
+			}
 		} else {
 			fmt.Printf("Пропущен не-картинка: %s\n", p)
 		}
@@ -25,10 +33,10 @@ func CreateSlideshow(imagePaths []string, outputPath string) error {
 
 	args := []string{"-y"}
 	for _, img := range valid {
-		args = append(args, "-loop", "1", "-t", "5", "-i", img)
+		args = append(args, "-f", "image2", "-loop", "1", "-t", "5", "-i", img)
 	}
 
-	// Новый фильтр: вписываем с сохранением пропорций и добавляем чёрные поля
+	// Фильтр остаётся без изменений
 	var filterParts []string
 	for i := range valid {
 		part := fmt.Sprintf(
@@ -55,14 +63,12 @@ func CreateSlideshow(imagePaths []string, outputPath string) error {
 		outputPath,
 	)
 
-	// Тайм-аут 5 минуты
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	out, err := cmd.CombinedOutput()
 
-	// Всегда проверяем ошибку контекста ПЕРЕД ошибкой FFmpeg
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("слайдшоу прервано по тайм-ауту: %w", ctx.Err())
 	}
@@ -70,6 +76,19 @@ func CreateSlideshow(imagePaths []string, outputPath string) error {
 		return fmt.Errorf("FFmpeg слайдшоу ошибка: %w\nВывод: %s", err, string(out))
 	}
 	return nil
+}
+
+// convertToJPEG конвертирует изображение в JPEG через ffmpeg, если это не JPEG.
+func convertToJPEG(inputPath, outputPath string) error {
+	if strings.ToLower(filepath.Ext(inputPath)) == ".jpg" || strings.ToLower(filepath.Ext(inputPath)) == ".jpeg" {
+		// Проверяем, действительно ли это JPEG
+		data, err := os.ReadFile(inputPath)
+		if err == nil && len(data) > 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+			return nil // уже JPEG
+		}
+	}
+	cmd := exec.Command("ffmpeg", "-y", "-i", inputPath, "-q:v", "2", outputPath)
+	return cmd.Run()
 }
 
 // isValidImage проверяет, что файл является изображением (через ffprobe)

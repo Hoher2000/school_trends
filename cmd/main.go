@@ -122,13 +122,13 @@ func main() {
 	os.MkdirAll(filepath.Join("output", "audio"), 0755)
 
 	//gen := generator.NewOpenRouter(os.Getenv("OPENROUTER_API_KEY"))
-	// GigaChat-генератор промптов (опционально)
-	/*gigachatGen, err := generator.NewGigaChatGenerator(os.Getenv("GIGACHAT_API_KEY"))
+	//GigaChat-генератор промптов (опционально)
+	gigachatGen, err := generator.NewGigaChatGenerator(os.Getenv("GIGACHAT_API_KEY"))
 	if err != nil {
 		log.Printf("Не удалось создать GigaChat генератор: %v", err)
 	} else {
 		defer gigachatGen.Close()
-	}*/
+	}
 	tgToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	tgChatID := os.Getenv("TELEGRAM_CHAT_ID")
 
@@ -167,6 +167,7 @@ func main() {
 			script.Subtitles = utils.SplitIntoSubtitles(script.FullText)
 			log.Printf("Субтитры для статьи %d сгенерированы из full_text", idx+1)
 		}
+	
 		var uniqueAudioPath string
 		saluteErrorChan := make(chan error)
 		go func(uap *string, ch chan error) {
@@ -220,11 +221,11 @@ func main() {
 		}*/
 
 		// Промпт для Kandinsky Video (опционально)
-		/*if gigachatGen != nil {
+		if gigachatGen != nil {
 			if _, err := gigachatGen.GenerateKandinskyPrompt(art.Title, art.Description); err != nil {
 				log.Printf("Ошибка генерации промпта для Kandinsky: %v", err)
 			}
-		}*/
+		}
 
 		// Яндекс.Картинки
 		// Задержка, чтобы не упереться в лимит OpenSERP при параллельных запросах

@@ -49,7 +49,7 @@ func NewOpenRouter(apiKey string) *OpenRouterGenerator {
 func (g *OpenRouterGenerator) GenerateScript(title, description string) (string, error) {
 	systemPrompt := `Ты — строгий модератор и креативный продюсер детского канала (аудитория 7-13 лет).
 Сначала оцени, подходит ли новость для детей 7-13 лет.
-
+Весь JSON должен быть в одну строку, без переносов. Если внутри full_text есть кавычки, экранируй их как \". Переносы строк замени на \n. Ответ должен быть СТРОГО валидным JSON объектом.
 НЕ подходят темы: политика, война, экономика, IT‑конференции, работа, налоги, недвижимость, криминал, взрослые отношения, трагедии, жестокость.
 
 ПОДХОДЯТ темы: игры (Minecraft, Roblox, Brawl Stars и др.), аниме, мемы, блогеры, школьные новости, интересные события, наука для детей, животные, спорт, TikTok-тренды, челленджи, вирусные видео, гаджеты, технологии.
@@ -103,7 +103,7 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 Озвучка должна начинаться с приветствия и заканчиваться призывом к обсуждению.`
 
 	// Первая попытка
-	content, err := g.callAPI(systemPrompt, fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description))
+	content, err := g.callAPI(systemPrompt, fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description), 800)
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +128,7 @@ func (g *OpenRouterGenerator) GenerateScript(title, description string) (string,
 	// JSON не найден — пробуем строгий промпт
 	log.Printf("Первая попытка не дала JSON, пробую снова со строгим промптом")
 	strictSystem := "Return ONLY a valid JSON object as specified. No other text, no markdown. All content in Russian."
-	content, err = g.callAPI(strictSystem, fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description))
+	content, err = g.callAPI(strictSystem, fmt.Sprintf("Заголовок: %s\nОписание: %s", title, description), 800)
 	if err != nil {
 		return "", err
 	}
@@ -164,7 +164,7 @@ func (g *OpenRouterGenerator) FetchTrendingNews() ([]NewsItem, error) {
 Обязательно: мемы, тренды TikTok/YouTube, игры (Minecraft, Roblox, Brawl Stars), аниме, необычные челленджи, смешные ситуации, научные открытия, крутые гаджеты.
 Верни СТРОГО JSON-массив объектов с полями title (заголовок), description (краткое описание) и link (ссылка на источник).`
 
-	content, err := g.callAPI(systemPrompt, "Самые вирусные новости для школьников прямо сейчас")
+	content, err := g.callAPI(systemPrompt, "Самые вирусные новости для школьников прямо сейчас", 600)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (g *OpenRouterGenerator) FetchTrendingNewsFallback() ([]NewsItem, error) {
 	systemPrompt := `Ты ищешь новости для детского канала. Темы: новые мемы, тренды TikTok, обновления игр, аниме, челленджи, смешные истории из школ, необычные животные, крутые изобретения.
 Верни JSON-массив с полями title, description, link.`
 
-	content, err := g.callAPI(systemPrompt, "Что сегодня обсуждают дети 9-13 лет")
+	content, err := g.callAPI(systemPrompt, "Что сегодня обсуждают дети 9-13 лет", 600)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,10 @@ func extractObjects(s string) []NewsItem {
 }
 
 // callAPI отправляет запрос и возвращает содержимое ответа.
-func (g *OpenRouterGenerator) callAPI(system, user string) (string, error) {
+func (g *OpenRouterGenerator) callAPI(system, user string, maxTokens int) (string, error) {
+	if maxTokens <= 0 {
+		maxTokens = 500 // разумное значение по умолчанию
+	}
 	reqBody := map[string]interface{}{
 		"model": g.Model,
 		"messages": []map[string]string{
@@ -269,7 +272,7 @@ func (g *OpenRouterGenerator) callAPI(system, user string) (string, error) {
 			{"role": "user", "content": user},
 		},
 		"temperature": 0.9,
-		"max_tokens":  600,
+		"max_tokens":  maxTokens,
 	}
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
